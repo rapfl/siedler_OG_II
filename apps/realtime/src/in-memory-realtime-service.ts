@@ -35,7 +35,7 @@ import {
   tradeWithBank,
   toggleReady,
   upgradeCity,
-} from "../../../packages/game-engine/src/index.js";
+} from "@siedler/game-engine";
 import type {
   ClientSubmitCommandMessage,
   CommandAcceptedMessage,
@@ -52,7 +52,7 @@ import type {
   RoomUpdatedMessage,
   ServerMessage,
   SessionAttachedMessage,
-} from "../../../packages/shared-types/src/index.js";
+} from "@siedler/shared-types";
 
 interface SessionBinding {
   sessionId: string;
@@ -365,6 +365,10 @@ export class InMemoryRealtimeService {
 
   getRoom(roomId: string): RoomState | undefined {
     return this.rooms.get(roomId);
+  }
+
+  getMatch(matchId: string): MatchState | undefined {
+    return this.matches.get(matchId);
   }
 
   submitMatchCommand(input: {
