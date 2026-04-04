@@ -1,0 +1,20 @@
+{
+  "name": "siedler-og-ii",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.11.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @siedler/shared-types && npm run build --workspace @siedler/game-engine && npm run build --workspace @siedler/realtime && npm run build --workspace @siedler/web",
+    "test": "npm run test --workspace @siedler/game-engine && npm run test --workspace @siedler/realtime",
+    "typecheck": "npm run build --workspace @siedler/shared-types && npm run typecheck --workspace @siedler/game-engine && npm run typecheck --workspace @siedler/realtime && npm run typecheck --workspace @siedler/web"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

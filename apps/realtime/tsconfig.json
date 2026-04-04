@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "baseUrl": ".",
+    "paths": {
+      "@siedler/shared-types": [
+        "../../packages/shared-types/src/index.ts"
+      ],
+      "@siedler/game-engine": [
+        "../../packages/game-engine/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}
