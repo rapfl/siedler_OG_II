@@ -23,4 +23,33 @@ describe("board presentation", () => {
       expect(height).toBeLessThan(presentation.height / 2);
     }
   });
+
+  it("preserves a faithful hex-grid geometry instead of warping center spacing", () => {
+    const board = createBoardTemplate();
+    const presentation = createBoardPresentation(board, 1200, 800, new Map());
+    const distanceRatios = Object.values(board.hexes)
+      .flatMap((hex) =>
+        hex.adjacentHexIds
+          .filter((neighborId) => hex.hexId < neighborId)
+          .map((neighborId) => {
+            const sourceNeighbor = board.hexes[neighborId]!;
+            const presentedHex = presentation.hexes.find((entry) => entry.hexId === hex.hexId)!;
+            const presentedNeighbor = presentation.hexes.find((entry) => entry.hexId === neighborId)!;
+            const sourceDistance = Math.hypot(
+              sourceNeighbor.uiCenter.x - hex.uiCenter.x,
+              sourceNeighbor.uiCenter.y - hex.uiCenter.y,
+            );
+            const screenDistance = Math.hypot(
+              presentedNeighbor.center.x - presentedHex.center.x,
+              presentedNeighbor.center.y - presentedHex.center.y,
+            );
+
+            return screenDistance / sourceDistance;
+          }),
+      )
+      .sort((left, right) => left - right);
+
+    expect(distanceRatios.length).toBeGreaterThan(0);
+    expect(distanceRatios.at(-1)! / distanceRatios[0]!).toBeLessThan(1.02);
+  });
 });

@@ -49,6 +49,7 @@ export interface BoardPresentation {
 
 const BOARD_PADDING = 52;
 const HEX_CORNER_ANGLES = [30, 90, 150, 210, 270, 330] as const;
+const HEX_RADIUS = 1;
 
 export function createBoardPresentation(
   board: GeneratedBoard,
@@ -57,49 +58,19 @@ export function createBoardPresentation(
   playerColors: Map<string, PlayerColor | undefined>,
 ): BoardPresentation {
   const sourceHexPolygons = Object.fromEntries(
-    Object.entries(board.hexes).map(([hexId, hex]) => [hexId, createSourceHexPolygon(hexId, hex.uiCenter)]),
+    Object.entries(board.hexes).map(([hexId, hex]) => [hexId, createSourceHexPolygon(hex.uiCenter)]),
   ) as Record<string, BoardUiPoint[]>;
-
-  const sourceHexCenters = Object.values(board.hexes).map((hex) => hex.uiCenter);
-  const xs = sourceHexCenters.map((point) => point.x);
-  const ys = sourceHexCenters.map((point) => point.y);
-  const rawCenter = {
-    x: (Math.min(...xs) + Math.max(...xs)) / 2,
-    y: (Math.min(...ys) + Math.max(...ys)) / 2,
-  };
-  const span = {
-    x: Math.max(...xs) - Math.min(...xs),
-    y: Math.max(...ys) - Math.min(...ys),
-  };
-
-  const abstractProject = (point: BoardUiPoint) => projectBoardPoint(point, rawCenter, span);
-
-  const abstractHexCenters = Object.fromEntries(
-    Object.entries(board.hexes).map(([hexId, hex]) => [hexId, abstractProject(hex.uiCenter)]),
+  const sourceIntersections = Object.fromEntries(
+    Object.entries(board.intersections).map(([intersectionId, intersection]) => [intersectionId, intersection.uiPosition]),
   ) as Record<string, BoardUiPoint>;
-
-  const abstractIntersections = Object.fromEntries(
-    Object.entries(board.intersections).map(([intersectionId, intersection]) => [
-      intersectionId,
-      abstractProject(intersection.uiPosition),
-    ]),
-  ) as Record<string, BoardUiPoint>;
-
-  const abstractHexPolygons = Object.fromEntries(
-    Object.entries(sourceHexPolygons).map(([hexId, polygon]) => [hexId, polygon.map(abstractProject)]),
-  ) as Record<string, BoardUiPoint[]>;
-
-  const abstractPoints = [...Object.values(abstractIntersections), ...Object.values(abstractHexPolygons).flat()];
-  const minX = Math.min(...abstractPoints.map((point) => point.x));
-  const maxX = Math.max(...abstractPoints.map((point) => point.x));
-  const minY = Math.min(...abstractPoints.map((point) => point.y));
-  const maxY = Math.max(...abstractPoints.map((point) => point.y));
+  const sourcePoints = [...Object.values(sourceHexPolygons).flat(), ...Object.values(sourceIntersections)];
+  const bounds = measureBounds(sourcePoints);
 
   const availableWidth = Math.max(width - BOARD_PADDING * 2, 1);
   const availableHeight = Math.max(height - BOARD_PADDING * 2, 1);
-  const scale = Math.min(availableWidth / (maxX - minX), availableHeight / (maxY - minY));
-  const offsetX = (width - (maxX - minX) * scale) / 2 - minX * scale;
-  const offsetY = (height - (maxY - minY) * scale) / 2 - minY * scale;
+  const scale = Math.min(availableWidth / bounds.width, availableHeight / bounds.height);
+  const offsetX = (width - bounds.width * scale) / 2 - bounds.minX * scale;
+  const offsetY = (height - bounds.height * scale) / 2 - bounds.minY * scale;
 
   const project = (point: BoardUiPoint): BoardUiPoint => ({
     x: point.x * scale + offsetX,
@@ -107,18 +78,21 @@ export function createBoardPresentation(
   });
 
   const screenHexCenters = Object.fromEntries(
-    Object.entries(abstractHexCenters).map(([hexId, point]) => [hexId, project(point)]),
+    Object.entries(board.hexes).map(([hexId, hex]) => [hexId, project(hex.uiCenter)]),
   ) as Record<string, BoardUiPoint>;
 
   const screenIntersections = Object.fromEntries(
-    Object.entries(abstractIntersections).map(([intersectionId, point]) => [intersectionId, project(point)]),
+    Object.entries(sourceIntersections).map(([intersectionId, point]) => [intersectionId, project(point)]),
   ) as Record<string, BoardUiPoint>;
 
   const screenHexPolygons = Object.fromEntries(
-    Object.entries(abstractHexPolygons).map(([hexId, polygon]) => [hexId, polygon.map(project)]),
+    Object.entries(sourceHexPolygons).map(([hexId, polygon]) => [hexId, polygon.map(project)]),
   ) as Record<string, BoardUiPoint[]>;
 
-  const center = project(abstractProject(rawCenter));
+  const center = project({
+    x: bounds.minX + bounds.width / 2,
+    y: bounds.minY + bounds.height / 2,
+  });
 
   return {
     width,
@@ -167,50 +141,14 @@ export function createBoardPresentation(
   };
 }
 
-function createSourceHexPolygon(hexId: string, sourceCenter: BoardUiPoint) {
+function createSourceHexPolygon(sourceCenter: BoardUiPoint) {
   return HEX_CORNER_ANGLES.map((angle) => {
     const radians = (Math.PI / 180) * angle;
-    const radius = 0.96 + hashToUnit(`${hexId}:${angle}`) * 0.08;
     return {
-      x: sourceCenter.x + Math.cos(radians) * radius,
-      y: sourceCenter.y + Math.sin(radians) * radius,
+      x: sourceCenter.x + Math.cos(radians) * HEX_RADIUS,
+      y: sourceCenter.y + Math.sin(radians) * HEX_RADIUS,
     };
   });
-}
-
-function projectBoardPoint(point: BoardUiPoint, center: BoardUiPoint, span: BoardUiPoint): BoardUiPoint {
-  const nx = span.x === 0 ? 0 : (point.x - center.x) / span.x;
-  const ny = span.y === 0 ? 0 : (point.y - center.y) / span.y;
-
-  const stretched = {
-    x: (point.x - center.x) * 1.04,
-    y: (point.y - center.y) * 0.96,
-  };
-
-  const drift = {
-    x: Math.sin(ny * Math.PI * 1.1) * 0.46 + nx * ny * 0.9,
-    y: Math.sin(nx * Math.PI * 1.5) * 0.24 - nx * nx * 0.74 + ny * 0.18,
-  };
-
-  return rotatePoint(
-    {
-      x: center.x + stretched.x + drift.x,
-      y: center.y + stretched.y + drift.y,
-    },
-    center,
-    -6,
-  );
-}
-
-function rotatePoint(point: BoardUiPoint, center: BoardUiPoint, angleDegrees: number): BoardUiPoint {
-  const radians = (Math.PI / 180) * angleDegrees;
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-
-  return {
-    x: center.x + dx * Math.cos(radians) - dy * Math.sin(radians),
-    y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians),
-  };
 }
 
 function positionHarborLabel(a: BoardUiPoint, b: BoardUiPoint, center: BoardUiPoint) {
@@ -229,12 +167,20 @@ function positionHarborLabel(a: BoardUiPoint, b: BoardUiPoint, center: BoardUiPo
   };
 }
 
-function hashToUnit(input: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
+function measureBounds(points: BoardUiPoint[]) {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
 
-  return ((hash >>> 0) % 1000) / 1000;
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: Math.max(maxX - minX, 1),
+    height: Math.max(maxY - minY, 1),
+  };
 }
