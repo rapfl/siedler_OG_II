@@ -1,23 +1,36 @@
-import type { GeneratedBoard, MatchCommandType, MatchView, ResourceCounts, RoomStartBlocker, RoomView, ServerMessage } from "@siedler/shared-types";
+import type {
+  GeneratedBoard,
+  MatchCommandType,
+  MatchPlayerSummaryView,
+  MatchView,
+  ResourceCounts,
+  ResourceType,
+  RoomStartBlocker,
+  RoomView,
+  ServerMessage,
+} from "@siedler/shared-types";
 
 export interface RoomStatusBadge {
   label: string;
   tone: "success" | "warning" | "danger" | "muted";
 }
 
-export interface ForcedFlowModel {
-  title: string;
-  description: string;
-}
+const RESOURCE_LABELS: Record<ResourceType, string> = {
+  wood: "Holz",
+  brick: "Lehm",
+  sheep: "Wolle",
+  wheat: "Getreide",
+  ore: "Erz",
+};
 
 export function roomBlockerCopy(blocker: RoomStartBlocker): string {
   switch (blocker) {
     case "MIN_PLAYERS":
-      return "Mindestens drei Spieler werden benötigt.";
+      return "Mindestens drei Spieler muessen am Tisch sitzen.";
     case "UNREADY_PLAYERS":
-      return "Alle belegten Sitze müssen bereit sein.";
+      return "Alle belegten Sitze muessen bereit sein.";
     case "ROOM_NOT_OPEN":
-      return "Der Raum ist gerade nicht im Startzustand.";
+      return "Der Raum ist gerade nicht startbereit.";
   }
 
   return blocker;
@@ -27,7 +40,7 @@ export function roomStatusBadge(room: RoomView): RoomStatusBadge {
   switch (room.roomStatus) {
     case "room_open_prematch":
       return {
-        label: room.canStartMatch ? "Startbereit" : "Vorbereitung",
+        label: room.canStartMatch ? "Startbereit" : "Lobby",
         tone: room.canStartMatch ? "success" : "warning",
       };
     case "room_match_starting":
@@ -60,86 +73,82 @@ export function roomStatusBadge(room: RoomView): RoomStatusBadge {
 
 export function matchPhaseLabel(match: MatchView | undefined): string {
   if (!match) {
-    return "Kein Match aktiv";
+    return "Kein Match";
   }
 
   if (match.matchStatus === "match_setup") {
-    return `Setup · ${match.setupStep ?? "initialisierung"}`;
+    return "Setup";
   }
 
   if (match.matchStatus === "match_finished") {
-    return "Match beendet";
+    return "Beendet";
   }
 
-  return match.turnPhase?.replaceAll("_", " ") ?? match.matchStatus;
-}
-
-export function forcedFlowCopy(match: MatchView | undefined): ForcedFlowModel | undefined {
-  if (!match?.requiredAction) {
-    return undefined;
-  }
-
-  switch (match.requiredAction) {
-    case "PLACE_INITIAL_SETTLEMENT":
-      return {
-        title: "Start-Siedlung platzieren",
-        description: "Waehle eine legale Intersection fuer die aktuelle Setup-Runde.",
-      };
-    case "PLACE_INITIAL_ROAD":
-      return {
-        title: "Start-Strasse platzieren",
-        description: "Die Strasse muss an deine zuletzt gesetzte Setup-Siedlung angrenzen.",
-      };
-    case "ROLL_DICE":
-      return {
-        title: "Wuerfeln",
-        description: "Ohne Wurf geht der Zug nicht weiter.",
-      };
-    case "DISCARD_RESOURCES":
-      return {
-        title: "Ressourcen abwerfen",
-        description: `Lege exakt ${match.requiredDiscardCount ?? 0} Karten ab, damit die 7er-Aufloesung weitergehen kann.`,
-      };
-    case "MOVE_ROBBER":
-      return {
-        title: "Raeuber versetzen",
-        description: "Waehle ein anderes Hex. Danach folgt gegebenenfalls der Steal-Schritt.",
-      };
-    case "STEAL_RESOURCE":
-      return {
-        title: "Zielspieler berauben",
-        description: "Waehle genau einen legalen Zielspieler am aktuellen Raeuber-Feld.",
-      };
-    case "PICK_YEAR_OF_PLENTY_RESOURCE":
-      return {
-        title: "Ressource waehlen",
-        description: "Year of Plenty verlangt zwei konkrete Ressourcenauswahlen.",
-      };
-    case "PICK_MONOPOLY_RESOURCE_TYPE":
-      return {
-        title: "Ressourcentyp bestimmen",
-        description: "Monopoly sammelt danach alle Karten dieses Typs von den Gegnern ein.",
-      };
-    case "RESPOND_TRADE":
-      return {
-        title: "Auf Trade reagieren",
-        description: "Dieses Angebot ist offen und erwartet deine Annahme oder Ablehnung.",
-      };
-    case "BUILD_ROAD":
-      return {
-        title: "Strassen-Effekt fortsetzen",
-        description: "Road Building ist noch nicht abgeschlossen.",
-      };
+  switch (match.turnPhase) {
+    case "pre_roll_devcard_window":
+      return "Vor dem Wurf";
+    case "roll_pending":
+      return "Wuerfeln";
+    case "discard_pending":
+      return "Discard";
+    case "robber_pending":
+      return "Raeuber";
+    case "action_phase":
+      return "Aktionsphase";
+    case "devcard_resolution":
+      return "Karteneffekt";
     default:
-      return {
-        title: match.requiredAction.replaceAll("_", " "),
-        description: "Diese Aktion hat gerade Vorrang vor allen anderen Schritten.",
-      };
+      return match.turnPhase?.replaceAll("_", " ") ?? match.matchStatus;
   }
 }
 
-export function isActionEnabled(match: MatchView | undefined, action: MatchCommandType): boolean {
-  return !!match?.allowedActions?.includes(action);
+export function actionLabel(action: MatchCommandType): string {
+  switch (action) {
+    case "ROLL_DICE":
+      return "Wuerfeln";
+    case "END_TURN":
+      return "Zug beenden";
+    case "BUILD_ROAD":
+      return "Strasse bauen";
+    case "BUILD_SETTLEMENT":
+      return "Siedlung bauen";
+    case "UPGRADE_CITY":
+      return "Stadt bauen";
+    case "BUY_DEV_CARD":
+      return "Entwicklungskarte kaufen";
+    case "PLAY_DEV_CARD_KNIGHT":
+      return "Knight spielen";
+    case "PLAY_DEV_CARD_YEAR_OF_PLENTY":
+      return "Year of Plenty";
+    case "PLAY_DEV_CARD_MONOPOLY":
+      return "Monopoly";
+    case "PLAY_DEV_CARD_ROAD_BUILDING":
+      return "Road Building";
+    case "OFFER_TRADE":
+      return "Handel anbieten";
+    case "TRADE_WITH_BANK":
+      return "Mit Bank handeln";
+    case "CONFIRM_TRADE":
+      return "Handel bestaetigen";
+    case "CANCEL_TRADE":
+      return "Handel abbrechen";
+    case "DISCARD_RESOURCES":
+      return "Karten abwerfen";
+    case "MOVE_ROBBER":
+      return "Raeuber setzen";
+    case "STEAL_RESOURCE":
+      return "Ressource stehlen";
+    case "PICK_YEAR_OF_PLENTY_RESOURCE":
+      return "Ressource waehlen";
+    case "PICK_MONOPOLY_RESOURCE_TYPE":
+      return "Typ waehlen";
+    case "RESPOND_TRADE":
+      return "Auf Handel reagieren";
+    case "PLACE_INITIAL_SETTLEMENT":
+      return "Start-Siedlung";
+    case "PLACE_INITIAL_ROAD":
+      return "Start-Strasse";
+  }
 }
 
 export function resourceEntries(resources: ResourceCounts | undefined) {
@@ -152,52 +161,149 @@ export function resourceEntries(resources: ResourceCounts | undefined) {
   };
 
   return [
-    { type: "wood", label: "Wood", count: counts.wood },
-    { type: "brick", label: "Brick", count: counts.brick },
-    { type: "sheep", label: "Sheep", count: counts.sheep },
-    { type: "wheat", label: "Wheat", count: counts.wheat },
-    { type: "ore", label: "Ore", count: counts.ore },
+    { type: "wood", label: RESOURCE_LABELS.wood, count: counts.wood },
+    { type: "brick", label: RESOURCE_LABELS.brick, count: counts.brick },
+    { type: "sheep", label: RESOURCE_LABELS.sheep, count: counts.sheep },
+    { type: "wheat", label: RESOURCE_LABELS.wheat, count: counts.wheat },
+    { type: "ore", label: RESOURCE_LABELS.ore, count: counts.ore },
   ] as const;
+}
+
+export function resourceLabel(resource: ResourceType): string {
+  return RESOURCE_LABELS[resource];
+}
+
+export function developmentCardEntries(cards: MatchView["ownDevelopmentCards"] | undefined) {
+  const next = cards ?? {
+    knight: 0,
+    victory_point: 0,
+    year_of_plenty: 0,
+    monopoly: 0,
+    road_building: 0,
+  };
+
+  return [
+    { type: "knight", label: "Knight", count: next.knight, action: "PLAY_DEV_CARD_KNIGHT" as const },
+    { type: "year_of_plenty", label: "Year of Plenty", count: next.year_of_plenty, action: "PLAY_DEV_CARD_YEAR_OF_PLENTY" as const },
+    { type: "monopoly", label: "Monopoly", count: next.monopoly, action: "PLAY_DEV_CARD_MONOPOLY" as const },
+    { type: "road_building", label: "Road Building", count: next.road_building, action: "PLAY_DEV_CARD_ROAD_BUILDING" as const },
+    { type: "victory_point", label: "Victory Point", count: next.victory_point, action: undefined },
+  ];
+}
+
+export function playerColorToken(color: string | undefined): string {
+  switch (color) {
+    case "red":
+      return "player-red";
+    case "blue":
+      return "player-blue";
+    case "white":
+      return "player-white";
+    case "orange":
+      return "player-orange";
+    default:
+      return "player-neutral";
+  }
 }
 
 export function summarizeLogEntry(message: ServerMessage): string {
   switch (message.type) {
     case "server.command_accepted":
-      return `Command akzeptiert · ${message.effectsSummary ?? message.commandId}`;
+      return message.effectsSummary ? `Aktion erfolgreich: ${message.effectsSummary}` : "Aktion erfolgreich.";
     case "server.command_rejected":
-      return `Command abgewiesen · ${message.reasonCode}`;
+      return `Aktion abgewiesen: ${message.message}`;
     case "server.lifecycle_transition":
-      return `${message.context} · ${message.fromState} -> ${message.toState}`;
+      return `${message.context} wechselt von ${message.fromState} zu ${message.toState}.`;
     case "server.room_snapshot":
-      return `Room Snapshot · ${message.room.roomCode}`;
+      return `Raum ${message.room.roomCode} synchronisiert.`;
     case "server.room_updated":
-      return `Room Update · ${message.room.roomStatus}`;
+      return `Lobby-Update: ${message.room.roomStatus}.`;
     case "server.match_snapshot":
-      return `Match Snapshot · ${matchPhaseLabel(message.playerView)}`;
+      return message.playerView.actionContext?.title
+        ? `${message.playerView.actionContext.title}.`
+        : `Match-Update: ${matchPhaseLabel(message.playerView)}.`;
     case "server.presence_updated":
-      return `Presence · ${message.playerId} ist ${message.presence}`;
+      return `${message.playerId} ist jetzt ${message.presence}.`;
     case "server.session_attached":
-      return `Session attached · ${message.resumeContext}`;
+      return `Session verbunden: ${message.resumeContext}.`;
   }
 
-  return "unhandled event";
+  return "Neues Spielereignis.";
 }
 
-export function boardRows(board: GeneratedBoard | undefined) {
+export function buildPlayerLookup(room: RoomView | undefined) {
+  return new Map((room?.playerSummaries ?? []).map((player) => [player.playerId, player]));
+}
+
+export function boardBounds(board: GeneratedBoard | undefined) {
   if (!board) {
-    return [];
+    return {
+      minX: 0,
+      minY: 0,
+      width: 100,
+      height: 100,
+    };
   }
 
-  const rows = new Map<number, typeof board.hexOrder>();
-  for (const hexId of board.hexOrder) {
-    const hex = board.hexes[hexId];
-    if (!hex) {
+  const hexCenters = Object.values(board.hexes).map((hex) => hex.uiCenter);
+  const xs = hexCenters.map((point) => point.x);
+  const ys = hexCenters.map((point) => point.y);
+  const padding = 2.4;
+
+  const minX = Math.min(...xs) - padding;
+  const maxX = Math.max(...xs) + padding;
+  const minY = Math.min(...ys) - padding;
+  const maxY = Math.max(...ys) + padding;
+
+  return {
+    minX,
+    minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+export function bestTradeRatioByResource(board: GeneratedBoard | undefined, playerId: string | undefined) {
+  const defaults: Record<ResourceType, 2 | 3 | 4> = {
+    wood: 4,
+    brick: 4,
+    sheep: 4,
+    wheat: 4,
+    ore: 4,
+  };
+
+  if (!board || !playerId) {
+    return defaults;
+  }
+
+  for (const intersection of Object.values(board.intersections)) {
+    if (intersection.building?.ownerPlayerId !== playerId || !intersection.harborAccess) {
       continue;
     }
-    const row = rows.get(hex.axialCoord.r) ?? [];
-    row.push(hexId);
-    rows.set(hex.axialCoord.r, row);
+
+    if (intersection.harborAccess === "generic_3_to_1") {
+      for (const resource of Object.keys(defaults) as ResourceType[]) {
+        defaults[resource] = Math.min(defaults[resource], 3) as 2 | 3 | 4;
+      }
+      continue;
+    }
+
+    const resource = intersection.harborAccess.replace("_2_to_1", "") as ResourceType;
+    defaults[resource] = 2;
   }
 
-  return [...rows.entries()].sort(([left], [right]) => left - right);
+  return defaults;
+}
+
+export function playerStatusText(player: MatchPlayerSummaryView) {
+  if (player.isActive) {
+    return "Am Zug";
+  }
+  if (player.tradeResponse === "accept") {
+    return "Handel ok";
+  }
+  if (player.tradeResponse === "reject") {
+    return "Handel nein";
+  }
+  return "Wartet";
 }

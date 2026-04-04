@@ -60,16 +60,16 @@ export function AssetToken({
 }) {
   const toneClass =
     tone === "wood"
-      ? "bg-[rgba(201,146,88,0.22)] text-[#fff2da] border-[rgba(242,211,167,0.2)]"
+      ? "bg-[rgba(251,139,36,0.18)] text-white border-[rgba(251,139,36,0.28)]"
       : tone === "felt"
-        ? "bg-[rgba(144,175,124,0.18)] text-[#eff6e7] border-[rgba(173,211,150,0.2)]"
+        ? "bg-[rgba(4,167,119,0.16)] text-[#e9fff8] border-[rgba(4,167,119,0.24)]"
         : tone === "paper"
-          ? "bg-[rgba(247,237,220,0.86)] text-[#3f2d1d] border-[rgba(74,53,27,0.08)]"
+          ? "bg-[rgba(227,223,255,0.9)] text-[#2b0430] border-[rgba(130,2,99,0.16)]"
           : tone === "danger"
-            ? "bg-[rgba(185,91,80,0.16)] text-[#ffd8d4] border-[rgba(185,91,80,0.25)]"
+            ? "bg-[rgba(217,3,104,0.16)] text-[#ffe1ef] border-[rgba(217,3,104,0.28)]"
             : tone === "success"
-              ? "bg-[rgba(111,156,120,0.18)] text-[#e6f2e3] border-[rgba(111,156,120,0.28)]"
-              : "bg-[rgba(255,248,235,0.06)] text-[var(--text-strong)] border-[var(--line)]";
+              ? "bg-[rgba(4,167,119,0.18)] text-[#ebfff8] border-[rgba(4,167,119,0.28)]"
+              : "bg-[rgba(227,223,255,0.08)] text-[var(--text-strong)] border-[var(--line)]";
   const sizeClass = size === "sm" ? "h-8 w-8 text-[0.65rem]" : size === "lg" ? "h-14 w-14 text-sm" : "h-10 w-10 text-[0.72rem]";
 
   return (

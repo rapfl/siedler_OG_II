@@ -149,6 +149,11 @@ export interface ResourceCounts {
   ore: number;
 }
 
+export interface BoardUiPoint {
+  x: number;
+  y: number;
+}
+
 export interface BuildingState {
   ownerPlayerId: string;
   buildingType: BuildingType;
@@ -164,6 +169,7 @@ export interface BoardHex {
     q: number;
     r: number;
   };
+  uiCenter: BoardUiPoint;
   resourceType: TerrainType;
   tokenNumber?: number | undefined;
   isDesert: boolean;
@@ -175,6 +181,7 @@ export interface BoardHex {
 
 export interface BoardIntersection {
   intersectionId: string;
+  uiPosition: BoardUiPoint;
   adjacentHexIds: string[];
   adjacentEdgeIds: string[];
   adjacentIntersectionIds: string[];
@@ -184,6 +191,7 @@ export interface BoardIntersection {
 
 export interface BoardEdge {
   edgeId: string;
+  uiMidpoint: BoardUiPoint;
   intersectionAId: string;
   intersectionBId: string;
   adjacentHexIds: string[];
@@ -279,6 +287,7 @@ export interface RoomSeatState {
 export interface RoomView {
   roomId: string;
   roomCode: string;
+  invitePath: string;
   roomStatus: RoomStatus;
   roomVersion: number;
   maxPlayers: PlayerCount;
@@ -292,6 +301,24 @@ export interface RoomView {
   postgameSummary?: MatchPostgameSummary | undefined;
 }
 
+export interface MatchPlayerSummaryView {
+  playerId: string;
+  turnOrder: number;
+  visiblePoints: number;
+  resourceCardCount: number;
+  developmentCardCount: number;
+  playedKnightCount: number;
+  isActive: boolean;
+  isSelf: boolean;
+  tradeResponse?: TradeResponse | undefined;
+}
+
+export interface MatchActionContext {
+  title: string;
+  description: string;
+  tone: "primary" | "warning" | "danger" | "success" | "neutral";
+}
+
 export interface MatchView {
   matchId: string;
   matchStatus: MatchStatus;
@@ -300,9 +327,14 @@ export interface MatchView {
   playerOrder: string[];
   allowedActions?: MatchCommandType[] | undefined;
   requiredAction?: MatchCommandType | undefined;
+  actionContext?: MatchActionContext | undefined;
   setupStep?: SetupStep | undefined;
   currentSetupPlayerId?: string | undefined;
   legalSetupPlacements?: string[] | undefined;
+  legalRoadEdgeIds?: string[] | undefined;
+  legalSettlementIntersectionIds?: string[] | undefined;
+  legalCityIntersectionIds?: string[] | undefined;
+  legalRobberHexIds?: string[] | undefined;
   activePlayerId?: string | undefined;
   turnPhase?: TurnPhase | undefined;
   lastRoll?: number | undefined;
@@ -318,6 +350,7 @@ export interface MatchView {
   requiredDiscardCount?: number | undefined;
   stealablePlayerIds?: string[] | undefined;
   tradeOffer?: MatchTradeView | undefined;
+  players: MatchPlayerSummaryView[];
 }
 
 export interface MatchTradeView {

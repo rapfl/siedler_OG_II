@@ -1,13 +1,44 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { GameBoard } from "../../components/game-board";
 import { AppShell } from "../../components/shell";
 import { AssetToken } from "../../lib/assets/manifest";
 import { useRealtimeSnapshot } from "../../lib/realtime/use-realtime";
-import { boardRows, forcedFlowCopy, isActionEnabled, matchPhaseLabel, resourceEntries, summarizeLogEntry } from "../../lib/ui/view-model";
-import type { ClientSubmitCommandMessage, GeneratedBoard, MatchCommandType, MatchView, ResourceCounts, ResourceType } from "@siedler/shared-types";
+import {
+  actionLabel,
+  bestTradeRatioByResource,
+  buildPlayerLookup,
+  developmentCardEntries,
+  matchPhaseLabel,
+  playerColorToken,
+  playerStatusText,
+  resourceEntries,
+  resourceLabel,
+  roomStatusBadge,
+  summarizeLogEntry,
+} from "../../lib/ui/view-model";
+import type { MatchCommandType, MatchView, ResourceCounts, ResourceType } from "@siedler/shared-types";
+
+const BOARD_ACTIONS = new Set<MatchCommandType>([
+  "PLACE_INITIAL_SETTLEMENT",
+  "PLACE_INITIAL_ROAD",
+  "BUILD_ROAD",
+  "BUILD_SETTLEMENT",
+  "UPGRADE_CITY",
+  "MOVE_ROBBER",
+]);
+
+const RESOURCE_TYPES: ResourceType[] = ["wood", "brick", "sheep", "wheat", "ore"];
+
+const BUILD_COSTS: Array<{ title: string; cost: Partial<ResourceCounts> }> = [
+  { title: "Strasse", cost: { wood: 1, brick: 1 } },
+  { title: "Siedlung", cost: { wood: 1, brick: 1, sheep: 1, wheat: 1 } },
+  { title: "Stadt", cost: { wheat: 2, ore: 3 } },
+  { title: "Entwicklung", cost: { sheep: 1, wheat: 1, ore: 1 } },
+];
 
 function randomCommandId(): string {
   return `ui-${Math.random().toString(36).slice(2, 9)}`;
@@ -23,47 +54,27 @@ function emptyResources(): ResourceCounts {
   };
 }
 
-function numberStep(resources: ResourceCounts, type: ResourceType, delta: number): ResourceCounts {
+function stepResources(resources: ResourceCounts, type: ResourceType, delta: number): ResourceCounts {
   return {
     ...resources,
     [type]: Math.max(0, resources[type] + delta),
   };
 }
 
-function buildCandidates(board: GeneratedBoard | undefined, match: MatchView | undefined) {
-  if (!board || !match) {
-    return {
-      road: [] as string[],
-      settlement: [] as string[],
-      city: [] as string[],
-      robber: [] as string[],
-    };
-  }
-
-  const road = Object.keys(board.edges).filter((edgeId) => !board.edges[edgeId]?.road).slice(0, 18);
-  const settlement = Object.keys(board.intersections)
-    .filter((intersectionId) => {
-      const intersection = board.intersections[intersectionId];
-      return !!intersection && !intersection.building && !intersection.adjacentIntersectionIds.some((adjacentId: string) => board.intersections[adjacentId]?.building);
-    })
-    .slice(0, 18);
-  const city = Object.keys(board.intersections)
-    .filter((intersectionId) => {
-      const building = board.intersections[intersectionId]?.building;
-      return building?.ownerPlayerId === match.playerId && building.buildingType === "settlement";
-    })
-    .slice(0, 12);
-  const robber = Object.keys(board.hexes).filter((hexId) => hexId !== board.robberHexId);
-
-  return {
-    road,
-    settlement,
-    city,
-    robber,
-  };
+function sumResources(resources: ResourceCounts): number {
+  return resources.wood + resources.brick + resources.sheep + resources.wheat + resources.ore;
 }
 
-async function submit(client: ReturnType<typeof useRealtimeSnapshot>["client"], match: MatchView, commandType: MatchCommandType, payload: Record<string, unknown>) {
+function isBoardAction(action: MatchCommandType | undefined): action is MatchCommandType {
+  return !!action && BOARD_ACTIONS.has(action);
+}
+
+async function submit(
+  client: ReturnType<typeof useRealtimeSnapshot>["client"],
+  match: MatchView,
+  commandType: MatchCommandType,
+  payload: Record<string, unknown>,
+) {
   return client.submitCommand({
     commandId: randomCommandId(),
     matchId: match.matchId,
@@ -78,27 +89,48 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const room = snapshot.room;
   const match = snapshot.match?.matchId === matchId ? snapshot.match : undefined;
   const board = snapshot.board;
-  const forced = forcedFlowCopy(match);
-  const rows = boardRows(board);
-  const candidates = useMemo(() => buildCandidates(board, match), [board, match]);
-  const [selectedRoad, setSelectedRoad] = useState<string>();
-  const [selectedSettlement, setSelectedSettlement] = useState<string>();
-  const [selectedCity, setSelectedCity] = useState<string>();
+  const playerLookup = useMemo(() => buildPlayerLookup(room), [room]);
+  const roomBadge = room ? roomStatusBadge(room) : undefined;
+  const [selectedBoardAction, setSelectedBoardAction] = useState<MatchCommandType>();
   const [tradeGive, setTradeGive] = useState<ResourceCounts>(emptyResources());
   const [tradeWant, setTradeWant] = useState<ResourceCounts>(emptyResources());
   const [bankGive, setBankGive] = useState<ResourceCounts>(emptyResources());
   const [bankWant, setBankWant] = useState<ResourceCounts>(emptyResources());
+  const [discardResources, setDiscardResources] = useState<ResourceCounts>(emptyResources());
+  const boardMode = isBoardAction(match?.requiredAction) ? match.requiredAction : selectedBoardAction;
+  const tradeRatios = useMemo(() => bestTradeRatioByResource(board, match?.playerId), [board, match?.playerId]);
+
+  useEffect(() => {
+    if (!match) {
+      return;
+    }
+
+    if (isBoardAction(match.requiredAction)) {
+      setSelectedBoardAction(undefined);
+      return;
+    }
+
+    setSelectedBoardAction((current) => {
+      if (!current) {
+        return current;
+      }
+      if (!match.allowedActions?.includes(current)) {
+        return undefined;
+      }
+      return current;
+    });
+  }, [match]);
 
   if (!match) {
     return (
       <AppShell title="siedler_OG_II" kicker="Match">
-        <div className="panel p-8">
+        <div className="empty-state">
           <p className="eyebrow">Match State</p>
-          <h1 className="display-title mt-3 text-4xl">Kein passender Match-Snapshot.</h1>
-          <p className="mt-4 text-[var(--text-muted)]">Oeffne ein aktives Match ueber den Room-Kontext oder Resume.</p>
-          <div className="mt-6 flex gap-3">
+          <h1 className="display-title">Kein passender Match-Snapshot.</h1>
+          <p>Oeffne ein aktives Match ueber den Room-Kontext oder ueber Resume.</p>
+          <div className="cluster">
             <Link href={session?.roomCode ? `/room/${session.roomCode}` : "/"} className="action-button">
-              Zurueck
+              Zurueck zur Lobby
             </Link>
           </div>
         </div>
@@ -106,417 +138,507 @@ export function MatchScreen({ matchId }: { matchId: string }) {
     );
   }
 
+  const players = match.players.map((player) => {
+    const roomPlayer = playerLookup.get(player.playerId);
+    return {
+      ...player,
+      displayName: roomPlayer?.displayName ?? player.playerId,
+      color: roomPlayer?.color,
+      presence: roomPlayer?.presence,
+      isHost: roomPlayer?.isHost ?? false,
+    };
+  });
+  const selfPlayer = players.find((player) => player.isSelf);
+  const primaryAction = match.actionContext?.title ?? (match.activePlayerId === match.playerId ? "Du bist am Zug." : "Warten.");
+  const requiredAction = match.requiredAction;
+  const discardRemaining = Math.max(0, (match.requiredDiscardCount ?? 0) - sumResources(discardResources));
+
   return (
     <AppShell
-      title={`Match ${match.matchId.slice(-6)}`}
-      kicker="Match / Setup / Forced Flow"
+      title={`Table ${room?.roomCode ?? match.matchId.slice(-6)}`}
+      kicker="Live Match"
       actions={
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="header-actions">
+          <span className={`badge ${roomBadge ? `status-${roomBadge.tone}` : "status-muted"}`}>{roomBadge?.label ?? "Match"}</span>
           <span className={`badge ${match.requiredAction ? "status-warning" : "status-muted"}`}>{matchPhaseLabel(match)}</span>
           {room?.roomCode ? (
             <Link href={`/room/${room.roomCode}`} className="action-button secondary-button">
-              Zum Room
+              Zur Lobby
             </Link>
           ) : null}
         </div>
       }
     >
-      <div className="grid-columns-main">
-        <section className="grid gap-6">
-          <div className="panel p-6">
-            <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="players-strip">
+        {players.map((player) => (
+          <article
+            key={player.playerId}
+            className={`player-chip ${player.isSelf ? "player-chip-self" : ""} ${player.isActive ? "player-chip-active" : ""}`}
+          >
+            <div className="player-chip-top">
+              <span className={`player-swatch ${playerColorToken(player.color)}`} />
               <div>
-                <p className="eyebrow">Action Guidance</p>
-                <h1 className="display-title mt-3 text-4xl">
-                  {forced?.title ?? (match.activePlayerId === match.playerId ? "Du bist am Zug." : "Beobachten oder reagieren.")}
-                </h1>
-                <p className="mt-4 max-w-3xl text-sm leading-7 text-[var(--text-muted)]">
-                  {forced?.description ?? "Optional erlaubte Aktionen sind rechts gebuendelt. Forced States verdrängen normale Builds und Trades."}
+                <p className="player-name">
+                  {player.displayName}
+                  {player.isHost ? <span className="micro-tag">HOST</span> : null}
                 </p>
+                <p className="player-meta">Seat {player.turnOrder + 1}</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {match.requiredAction ? <span className="badge status-warning">Required: {match.requiredAction}</span> : null}
-                <span className="badge">Active: {match.activePlayerId ?? "n/a"}</span>
-                {match.lastRoll ? <span className="badge">Last Roll: {match.lastRoll}</span> : null}
+            </div>
+            <div className="player-chip-stats">
+              <span className="micro-stat">{player.visiblePoints} VP</span>
+              <span className="micro-stat">{player.resourceCardCount} Karten</span>
+              <span className="micro-stat">{player.developmentCardCount} Dev</span>
+              <span className="micro-stat">{player.playedKnightCount} Knight</span>
+            </div>
+            <p className="player-status">{playerStatusText(player)}</p>
+          </article>
+        ))}
+      </div>
+
+      <div className="match-layout">
+        <section className="match-main">
+          <div className={`hero-panel ${match.actionContext?.tone ? `tone-${match.actionContext.tone}` : "tone-neutral"}`}>
+            <div>
+              <p className="eyebrow">Action Context</p>
+              <h1 className="display-title hero-title">{primaryAction}</h1>
+              <p className="hero-copy">
+                {match.actionContext?.description ?? "Waehle rechts eine Aktion und fuehre sie direkt ueber das Brett oder die Handkarten aus."}
+              </p>
+            </div>
+            <div className="hero-stats">
+              <span className="hero-pill">Aktiver Spieler: {players.find((player) => player.isActive)?.displayName ?? "n/a"}</span>
+              <span className="hero-pill">Letzter Wurf: {match.lastRoll ?? "noch keiner"}</span>
+              <span className="hero-pill">
+                Punkte: {match.visiblePointsByPlayerId?.[match.playerId] ?? 0} sichtbar / {match.totalPointsForPlayer ?? 0} gesamt
+              </span>
+              <span className="hero-pill">Versteckte VP: {match.ownHiddenPoints ?? 0}</span>
+            </div>
+          </div>
+
+          <div className="board-card">
+            <div className="section-header">
+              <div>
+                <p className="eyebrow">Board</p>
+                <h2 className="section-title">
+                  {boardMode ? `${actionLabel(boardMode)} auf dem Brett auswaehlen` : "Direkte Brettinteraktion"}
+                </h2>
+              </div>
+              <div className="section-meta">
+                {boardMode ? <span className="badge status-warning">Board Mode: {actionLabel(boardMode)}</span> : <span className="badge status-muted">Freie Ansicht</span>}
+                <span className="badge">Longest Road: {players.find((player) => player.playerId === match.longestRoadHolderPlayerId)?.displayName ?? "frei"}</span>
+                <span className="badge">Largest Army: {players.find((player) => player.playerId === match.largestArmyHolderPlayerId)?.displayName ?? "frei"}</span>
               </div>
             </div>
 
-            <div className="mt-6 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-              <div className="panel p-5">
-                <p className="eyebrow">Board Surface</p>
-                {board ? (
-                  <div className="mt-4 grid gap-3">
-                    {rows.map(([rowId, hexIds]) => (
-                      <div key={rowId} className="flex flex-wrap justify-center gap-3">
-                        {hexIds.map((hexId: string) => {
-                          const hex = board.hexes[hexId];
-                          if (!hex) {
-                            return null;
-                          }
-                          const highlighted = match.legalSetupPlacements?.includes(hexId) || (match.requiredAction === "MOVE_ROBBER" && hex.hexId !== board.robberHexId);
-                          return (
-                            <button
-                              key={hexId}
-                              className={`card-surface min-w-[120px] rounded-[24px] px-4 py-4 text-left ${highlighted ? "ring-2 ring-[var(--accent)]" : ""}`}
-                              onClick={() => {
-                                if (match.requiredAction === "MOVE_ROBBER") {
-                                  void submit(client, match, "MOVE_ROBBER", { targetHexId: hexId });
-                                }
-                              }}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[0.65rem] uppercase tracking-[0.2em] text-[#8a6a47]">{hex.resourceType}</span>
-                                {hex.hasRobber ? <AssetToken asset="piece_robber" tone="danger" size="sm" /> : null}
-                              </div>
-                              <p className="mt-3 font-semibold text-[#3c2d1f]">{hex.hexId}</p>
-                              <p className="mt-2 text-sm text-[#73583d]">Token {hex.tokenNumber ?? "desert"}</p>
-                            </button>
-                          );
-                        })}
-                      </div>
+            <GameBoard
+              board={board}
+              room={room}
+              match={match}
+              mode={boardMode}
+              onHexSelect={(hexId) => {
+                if (boardMode === "MOVE_ROBBER") {
+                  void submit(client, match, "MOVE_ROBBER", { targetHexId: hexId });
+                }
+              }}
+              onIntersectionSelect={(intersectionId) => {
+                if (boardMode === "PLACE_INITIAL_SETTLEMENT") {
+                  void submit(client, match, "PLACE_INITIAL_SETTLEMENT", { intersectionId });
+                }
+                if (boardMode === "BUILD_SETTLEMENT") {
+                  void submit(client, match, "BUILD_SETTLEMENT", { intersectionId });
+                }
+                if (boardMode === "UPGRADE_CITY") {
+                  void submit(client, match, "UPGRADE_CITY", { intersectionId });
+                }
+              }}
+              onEdgeSelect={(edgeId) => {
+                if (boardMode === "PLACE_INITIAL_ROAD") {
+                  void submit(client, match, "PLACE_INITIAL_ROAD", { edgeId });
+                }
+                if (boardMode === "BUILD_ROAD") {
+                  void submit(client, match, "BUILD_ROAD", { edgeId });
+                }
+              }}
+            />
+          </div>
+
+          <div className="two-column-grid">
+            <section className="panel match-subpanel">
+              <div className="section-header compact">
+                <div>
+                  <p className="eyebrow">Production & Costs</p>
+                  <h2 className="section-title">Baukosten und Hafenvorteile</h2>
+                </div>
+              </div>
+              <div className="cost-grid">
+                {BUILD_COSTS.map((entry) => (
+                  <div key={entry.title} className="cost-card">
+                    <p className="cost-title">{entry.title}</p>
+                    <div className="cost-row">
+                      {RESOURCE_TYPES.map((resource) => {
+                        const amount = entry.cost[resource] ?? 0;
+                        if (!amount) {
+                          return null;
+                        }
+                        return (
+                          <span key={`${entry.title}-${resource}`} className="micro-stat">
+                            {resourceLabel(resource)} x{amount}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                <div className="cost-card">
+                  <p className="cost-title">Bank / Hafen</p>
+                  <div className="cost-row">
+                    {RESOURCE_TYPES.map((resource) => (
+                      <span key={resource} className="micro-stat">
+                        {resourceLabel(resource)} {tradeRatios[resource]}:1
+                      </span>
                     ))}
                   </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="panel match-subpanel">
+              <div className="section-header compact">
+                <div>
+                  <p className="eyebrow">Event Log</p>
+                  <h2 className="section-title">Spielverlauf</h2>
+                </div>
+              </div>
+              <div className="event-stack">
+                {snapshot.eventLog.length === 0 ? (
+                  <p className="subtle-copy">Noch keine Ereignisse in dieser Session.</p>
                 ) : (
-                  <p className="mt-4 text-sm text-[var(--text-muted)]">Die lokale Mock-UI zeigt das Board nur, wenn ein Match-Snapshot mit oeffentlicher Boardlage vorliegt.</p>
+                  snapshot.eventLog
+                    .slice()
+                    .reverse()
+                    .map((message, index) => (
+                      <div key={`${message.type}-${index}`} className="event-row">
+                        <AssetToken
+                          asset={
+                            message.type === "server.command_rejected"
+                              ? "state_forced_action"
+                              : message.type === "server.lifecycle_transition"
+                                ? "log_victory"
+                                : message.type === "server.match_snapshot"
+                                  ? "log_dice_roll"
+                                  : message.type === "server.room_updated"
+                                    ? "status_ready"
+                                    : "log_build"
+                          }
+                          tone={message.type === "server.command_rejected" ? "danger" : "paper"}
+                          size="sm"
+                        />
+                        <p>{summarizeLogEntry(message)}</p>
+                      </div>
+                    ))
                 )}
               </div>
+            </section>
+          </div>
+        </section>
 
-              <div className="grid gap-4">
-                <div className="panel p-5">
-                  <p className="eyebrow">Own Hand</p>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    {resourceEntries(match.ownResources).map((resource) => (
-                      <div key={resource.type} className="inlay flex items-center justify-between p-3">
-                        <div className="flex items-center gap-3">
-                          <AssetToken asset={`resource_${resource.type}` as const} tone="paper" />
-                          <span className="text-sm text-[var(--text-strong)]">{resource.label}</span>
-                        </div>
-                        <span className="badge">{resource.count}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <span className="badge">Visible/Total: {match.visiblePointsByPlayerId?.[match.playerId] ?? 0}/{match.totalPointsForPlayer ?? 0}</span>
-                    <span className="badge">Hidden VP: {match.ownHiddenPoints ?? 0}</span>
+        <aside className="command-rail">
+          <section className="panel rail-panel">
+            <p className="eyebrow">Turn Rail</p>
+            <div className="rail-actions">
+              <ActionButton label={actionLabel("ROLL_DICE")} enabled={match.allowedActions?.includes("ROLL_DICE") ?? false} onClick={() => void submit(client, match, "ROLL_DICE", {})} />
+              <ActionButton label={actionLabel("BUY_DEV_CARD")} enabled={match.allowedActions?.includes("BUY_DEV_CARD") ?? false} onClick={() => void submit(client, match, "BUY_DEV_CARD", {})} />
+              <ActionButton
+                label={actionLabel("BUILD_ROAD")}
+                enabled={match.allowedActions?.includes("BUILD_ROAD") ?? false}
+                active={boardMode === "BUILD_ROAD"}
+                onClick={() => setSelectedBoardAction((current) => (current === "BUILD_ROAD" ? undefined : "BUILD_ROAD"))}
+              />
+              <ActionButton
+                label={actionLabel("BUILD_SETTLEMENT")}
+                enabled={match.allowedActions?.includes("BUILD_SETTLEMENT") ?? false}
+                active={boardMode === "BUILD_SETTLEMENT"}
+                onClick={() => setSelectedBoardAction((current) => (current === "BUILD_SETTLEMENT" ? undefined : "BUILD_SETTLEMENT"))}
+              />
+              <ActionButton
+                label={actionLabel("UPGRADE_CITY")}
+                enabled={match.allowedActions?.includes("UPGRADE_CITY") ?? false}
+                active={boardMode === "UPGRADE_CITY"}
+                onClick={() => setSelectedBoardAction((current) => (current === "UPGRADE_CITY" ? undefined : "UPGRADE_CITY"))}
+              />
+              <ActionButton label={actionLabel("END_TURN")} enabled={match.allowedActions?.includes("END_TURN") ?? false} onClick={() => void submit(client, match, "END_TURN", {})} />
+            </div>
+          </section>
+
+          <section className="panel rail-panel">
+            <p className="eyebrow">Own Hand</p>
+            <div className="resource-grid">
+              {resourceEntries(match.ownResources).map((resource) => (
+                <div key={resource.type} className="resource-card">
+                  <AssetToken asset={`resource_${resource.type}` as const} tone="paper" />
+                  <div>
+                    <p className="resource-card-title">{resource.label}</p>
+                    <p className="resource-card-count">{resource.count}</p>
                   </div>
                 </div>
-
-                <div className="panel p-5">
-                  <p className="eyebrow">Opponents</p>
-                  <div className="mt-4 grid gap-3">
-                    {match.playerOrder.filter((playerId: string) => playerId !== match.playerId).map((playerId: string) => (
-                      <div key={playerId} className="inlay flex items-center justify-between p-3">
-                        <div className="flex items-center gap-3">
-                          <AssetToken asset="state_waiting" tone={match.activePlayerId === playerId ? "felt" : "default"} />
-                          <div>
-                            <p className="text-sm text-[var(--text-strong)]">{playerId}</p>
-                            <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-                              Visible {match.visiblePointsByPlayerId?.[playerId] ?? 0}
-                            </p>
-                          </div>
-                        </div>
-                        {match.tradeOffer?.acceptedPlayerIds.includes(playerId) ? <span className="badge status-success">accepted</span> : null}
-                      </div>
-                    ))}
+              ))}
+            </div>
+            {requiredAction === "DISCARD_RESOURCES" ? (
+              <div className="rail-block danger-block">
+                <div className="section-header compact">
+                  <div>
+                    <p className="eyebrow">Discard</p>
+                    <h2 className="section-title">Genau {match.requiredDiscardCount ?? 0} Karten abwerfen</h2>
                   </div>
+                  <span className={`badge ${discardRemaining === 0 ? "status-success" : "status-warning"}`}>
+                    Rest: {discardRemaining}
+                  </span>
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="panel p-6">
-            <p className="eyebrow">Command Console</p>
-            <div className="mt-5 grid gap-6 lg:grid-cols-2">
-              <div className="grid gap-4">
-                <ActionButton title="ROLL_DICE" enabled={isActionEnabled(match, "ROLL_DICE")} onClick={() => void submit(client, match, "ROLL_DICE", {})} />
-                <ActionButton title="END_TURN" enabled={isActionEnabled(match, "END_TURN")} onClick={() => void submit(client, match, "END_TURN", {})} />
-                <ActionButton title="BUY_DEV_CARD" enabled={isActionEnabled(match, "BUY_DEV_CARD")} onClick={() => void submit(client, match, "BUY_DEV_CARD", {})} />
-                <ActionButton title="PLAY_DEV_CARD_KNIGHT" enabled={isActionEnabled(match, "PLAY_DEV_CARD_KNIGHT")} onClick={() => void submit(client, match, "PLAY_DEV_CARD_KNIGHT", {})} />
-                <ActionButton title="PLAY_DEV_CARD_YEAR_OF_PLENTY" enabled={isActionEnabled(match, "PLAY_DEV_CARD_YEAR_OF_PLENTY")} onClick={() => void submit(client, match, "PLAY_DEV_CARD_YEAR_OF_PLENTY", {})} />
-                <ActionButton title="PLAY_DEV_CARD_MONOPOLY" enabled={isActionEnabled(match, "PLAY_DEV_CARD_MONOPOLY")} onClick={() => void submit(client, match, "PLAY_DEV_CARD_MONOPOLY", {})} />
-                <ActionButton title="PLAY_DEV_CARD_ROAD_BUILDING" enabled={isActionEnabled(match, "PLAY_DEV_CARD_ROAD_BUILDING")} onClick={() => void submit(client, match, "PLAY_DEV_CARD_ROAD_BUILDING", {})} />
-              </div>
-
-              <div className="grid gap-4">
-                {match.requiredAction === "PLACE_INITIAL_SETTLEMENT" || isActionEnabled(match, "PLACE_INITIAL_SETTLEMENT") ? (
-                  <PlacementGroup title="Initial Settlement" ids={match.legalSetupPlacements ?? []} onChoose={(intersectionId) => void submit(client, match, "PLACE_INITIAL_SETTLEMENT", { intersectionId })} />
-                ) : null}
-                {match.requiredAction === "PLACE_INITIAL_ROAD" || isActionEnabled(match, "PLACE_INITIAL_ROAD") ? (
-                  <PlacementGroup title="Initial Road" ids={match.legalSetupPlacements ?? []} onChoose={(edgeId) => void submit(client, match, "PLACE_INITIAL_ROAD", { edgeId })} />
-                ) : null}
-                {isActionEnabled(match, "BUILD_ROAD") ? (
-                  <PlacementSelect title="Build Road" ids={candidates.road} value={selectedRoad} onChange={setSelectedRoad} onSubmit={() => {
-                    if (selectedRoad) {
-                      void submit(client, match, "BUILD_ROAD", { edgeId: selectedRoad });
-                    }
-                  }} />
-                ) : null}
-                {isActionEnabled(match, "BUILD_SETTLEMENT") ? (
-                  <PlacementSelect title="Build Settlement" ids={candidates.settlement} value={selectedSettlement} onChange={setSelectedSettlement} onSubmit={() => {
-                    if (selectedSettlement) {
-                      void submit(client, match, "BUILD_SETTLEMENT", { intersectionId: selectedSettlement });
-                    }
-                  }} />
-                ) : null}
-                {isActionEnabled(match, "UPGRADE_CITY") ? (
-                  <PlacementSelect title="Upgrade City" ids={candidates.city} value={selectedCity} onChange={setSelectedCity} onSubmit={() => {
-                    if (selectedCity) {
-                      void submit(client, match, "UPGRADE_CITY", { intersectionId: selectedCity });
-                    }
-                  }} />
-                ) : null}
-                {match.requiredAction === "STEAL_RESOURCE" ? (
-                  <PlacementGroup title="Steal Target" ids={match.stealablePlayerIds ?? []} onChoose={(victimPlayerId) => void submit(client, match, "STEAL_RESOURCE", { victimPlayerId })} />
-                ) : null}
-                {match.requiredAction === "PICK_YEAR_OF_PLENTY_RESOURCE" ? (
-                  <ResourcePicker title="Year of Plenty" onPick={(resourceType) => void submit(client, match, "PICK_YEAR_OF_PLENTY_RESOURCE", { resourceType })} />
-                ) : null}
-                {match.requiredAction === "PICK_MONOPOLY_RESOURCE_TYPE" ? (
-                  <ResourcePicker title="Monopoly" onPick={(resourceType) => void submit(client, match, "PICK_MONOPOLY_RESOURCE_TYPE", { resourceType })} />
-                ) : null}
-              </div>
-            </div>
-          </div>
-
-          <div className="panel p-6">
-            <p className="eyebrow">Trade and Recovery</p>
-            <div className="mt-5 grid gap-5 lg:grid-cols-2">
-              <ResourceComposer
-                title="Trade Offer"
-                left={tradeGive}
-                right={tradeWant}
-                enabled={isActionEnabled(match, "OFFER_TRADE")}
-                setLeft={setTradeGive}
-                setRight={setTradeWant}
-                leftLabel="Ich gebe"
-                rightLabel="Ich will"
-                onSubmit={() => void submit(client, match, "OFFER_TRADE", { offeredResources: tradeGive, requestedResources: tradeWant })}
-              />
-              <ResourceComposer
-                title="Bank / Harbor"
-                left={bankGive}
-                right={bankWant}
-                enabled={isActionEnabled(match, "TRADE_WITH_BANK")}
-                setLeft={setBankGive}
-                setRight={setBankWant}
-                leftLabel="Give"
-                rightLabel="Receive"
-                onSubmit={() => void submit(client, match, "TRADE_WITH_BANK", { giveResources: bankGive, receiveResources: bankWant })}
-              />
-            </div>
-
-            <div className="mt-5 flex flex-wrap gap-3">
-              {match.requiredAction === "RESPOND_TRADE" ? (
-                <>
-                  <button className="action-button" onClick={() => void submit(client, match, "RESPOND_TRADE", { tradeId: match.tradeOffer?.tradeId, response: "accept" })}>
-                    Trade annehmen
-                  </button>
-                  <button className="action-button secondary-button" onClick={() => void submit(client, match, "RESPOND_TRADE", { tradeId: match.tradeOffer?.tradeId, response: "reject" })}>
-                    Trade ablehnen
-                  </button>
-                </>
-              ) : null}
-              {isActionEnabled(match, "CONFIRM_TRADE") ? (
-                <button className="action-button" onClick={() => void submit(client, match, "CONFIRM_TRADE", { tradeId: match.tradeOffer?.tradeId, counterpartyPlayerId: match.tradeOffer?.acceptedPlayerIds[0] })}>
-                  Trade bestaetigen
+                <ResourceEditor resources={discardResources} onChange={setDiscardResources} />
+                <button
+                  className="action-button danger-button"
+                  disabled={discardRemaining !== 0}
+                  onClick={() => void submit(client, match, "DISCARD_RESOURCES", { resources: discardResources })}
+                >
+                  Discard bestaetigen
                 </button>
-              ) : null}
-              {isActionEnabled(match, "CANCEL_TRADE") ? (
-                <button className="action-button secondary-button" onClick={() => void submit(client, match, "CANCEL_TRADE", { tradeId: match.tradeOffer?.tradeId })}>
-                  Trade abbrechen
-                </button>
-              ) : null}
-              {client.supportsSandboxTools() ? (
-                <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
-                  Opponents vorziehen
-                </button>
-              ) : null}
-              <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
-                Snapshot reattach
-              </button>
-            </div>
-
-            {snapshot.lastRejected ? (
-              <div className="mt-5 rounded-[18px] border border-[rgba(185,91,80,0.35)] bg-[rgba(185,91,80,0.12)] p-4 text-sm leading-6 text-[#ffd8d4]">
-                <strong>{snapshot.lastRejected.reasonCode}</strong>: {snapshot.lastRejected.message}
-                {snapshot.lastRejected.currentRelevantVersion ? ` (aktueller Match-Stand ${snapshot.lastRejected.currentRelevantVersion})` : ""}
               </div>
             ) : null}
-          </div>
-        </section>
+          </section>
 
-        <section className="grid gap-6">
-          <div className="panel p-6">
-            <p className="eyebrow">Public Badges</p>
-            <div className="mt-4 flex flex-wrap gap-3">
-              <span className="badge">Longest Road: {match.longestRoadHolderPlayerId ?? "vacant"} · {match.longestRoadLength ?? 0}</span>
-              <span className="badge">Largest Army: {match.largestArmyHolderPlayerId ?? "vacant"} · {match.largestArmySize ?? 0}</span>
-            </div>
-          </div>
-
-          <div className="panel p-6">
-            <p className="eyebrow">Event Log</p>
-            <div className="mt-4 grid gap-3">
-              {snapshot.eventLog.length === 0 ? (
-                <p className="text-sm text-[var(--text-muted)]">Noch keine transportseitigen Events fuer diese Session.</p>
-              ) : (
-                snapshot.eventLog.slice().reverse().map((message, index) => (
-                  <div key={`${message.type}-${index}`} className="inlay flex items-start gap-3 p-3">
-                    <AssetToken
-                      asset={
-                        message.type === "server.command_accepted"
-                          ? "log_build"
-                          : message.type === "server.command_rejected"
-                            ? "state_forced_action"
-                            : message.type === "server.lifecycle_transition"
-                              ? "log_victory"
-                              : message.type === "server.match_snapshot"
-                                ? "log_dice_roll"
-                                : "log_trade_offer"
-                      }
-                      tone="paper"
-                      size="sm"
-                    />
-                    <p className="text-sm leading-6 text-[var(--text-muted)]">{summarizeLogEntry(message)}</p>
+          <section className="panel rail-panel">
+            <p className="eyebrow">Development Cards</p>
+            <div className="devcard-stack">
+              {developmentCardEntries(match.ownDevelopmentCards).map((card) => (
+                <div key={card.type} className="devcard-row">
+                  <div>
+                    <p className="resource-card-title">{card.label}</p>
+                    <p className="subtle-copy">x{card.count}</p>
                   </div>
-                ))
-              )}
+                  {card.action ? (
+                    <button
+                      className="secondary-button small-button"
+                      disabled={card.count === 0 || !(match.allowedActions?.includes(card.action) ?? false)}
+                      onClick={() => void submit(client, match, card.action, {})}
+                    >
+                      Spielen
+                    </button>
+                  ) : (
+                    <span className="micro-stat">verdeckt</span>
+                  )}
+                </div>
+              ))}
+              {requiredAction === "PICK_YEAR_OF_PLENTY_RESOURCE" || requiredAction === "PICK_MONOPOLY_RESOURCE_TYPE" ? (
+                <div className="choice-row">
+                  {RESOURCE_TYPES.map((resourceType) => (
+                    <button
+                      key={resourceType}
+                      className="secondary-button small-button"
+                      onClick={() =>
+                        void submit(client, match, requiredAction, {
+                          resourceType,
+                        })
+                      }
+                    >
+                      {resourceLabel(resourceType)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
-          </div>
-        </section>
+          </section>
+
+          <section className="panel rail-panel">
+            <p className="eyebrow">Trading</p>
+            <div className="rail-block">
+              <div className="section-header compact">
+                <div>
+                  <h2 className="section-title">Spielerhandel</h2>
+                  <p className="subtle-copy">Aktiver Spieler bietet, Gegner reagieren, dann bestaetigt der Host den Tausch.</p>
+                </div>
+              </div>
+              <div className="composer-grid">
+                <ResourceEditor title="Ich gebe" resources={tradeGive} onChange={setTradeGive} />
+                <ResourceEditor title="Ich will" resources={tradeWant} onChange={setTradeWant} />
+              </div>
+              <button
+                className="action-button"
+                disabled={!(match.allowedActions?.includes("OFFER_TRADE") ?? false)}
+                onClick={() => void submit(client, match, "OFFER_TRADE", { offeredResources: tradeGive, requestedResources: tradeWant })}
+              >
+                Handel anbieten
+              </button>
+              {match.tradeOffer ? (
+                <div className="trade-summary">
+                  <p className="resource-card-title">
+                    Angebot von {players.find((player) => player.playerId === match.tradeOffer?.offeredByPlayerId)?.displayName ?? match.tradeOffer.offeredByPlayerId}
+                  </p>
+                  <p className="subtle-copy">
+                    Gibt {resourceSummary(match.tradeOffer.offeredResources)} gegen {resourceSummary(match.tradeOffer.requestedResources)}
+                  </p>
+                  <div className="cost-row">
+                    {match.tradeOffer.acceptedPlayerIds.map((playerId) => (
+                      <span key={playerId} className="micro-stat success-pill">
+                        {players.find((player) => player.playerId === playerId)?.displayName ?? playerId} ok
+                      </span>
+                    ))}
+                    {match.tradeOffer.rejectedPlayerIds.map((playerId) => (
+                      <span key={playerId} className="micro-stat danger-pill">
+                        {players.find((player) => player.playerId === playerId)?.displayName ?? playerId} nein
+                      </span>
+                    ))}
+                  </div>
+                  <div className="cluster">
+                    {requiredAction === "RESPOND_TRADE" ? (
+                      <>
+                        <button className="action-button success-button" onClick={() => void submit(client, match, "RESPOND_TRADE", { tradeId: match.tradeOffer?.tradeId, response: "accept" })}>
+                          Annehmen
+                        </button>
+                        <button className="action-button danger-button" onClick={() => void submit(client, match, "RESPOND_TRADE", { tradeId: match.tradeOffer?.tradeId, response: "reject" })}>
+                          Ablehnen
+                        </button>
+                      </>
+                    ) : null}
+                    {(match.allowedActions?.includes("CONFIRM_TRADE") ?? false) ? (
+                      <button
+                        className="action-button"
+                        onClick={() =>
+                          void submit(client, match, "CONFIRM_TRADE", {
+                            tradeId: match.tradeOffer?.tradeId,
+                            counterpartyPlayerId: match.tradeOffer?.acceptedPlayerIds[0],
+                          })
+                        }
+                      >
+                        Tauschen
+                      </button>
+                    ) : null}
+                    {(match.allowedActions?.includes("CANCEL_TRADE") ?? false) ? (
+                      <button className="action-button secondary-button" onClick={() => void submit(client, match, "CANCEL_TRADE", { tradeId: match.tradeOffer?.tradeId })}>
+                        Angebot schliessen
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rail-block">
+              <div className="section-header compact">
+                <div>
+                  <h2 className="section-title">Bank / Hafen</h2>
+                  <p className="subtle-copy">Server validiert das beste 2:1-, 3:1- oder 4:1-Verhaeltnis automatisch.</p>
+                </div>
+              </div>
+              <div className="composer-grid">
+                <ResourceEditor title="Ich gebe" resources={bankGive} onChange={setBankGive} />
+                <ResourceEditor title="Ich erhalte" resources={bankWant} onChange={setBankWant} />
+              </div>
+              <button
+                className="action-button"
+                disabled={!(match.allowedActions?.includes("TRADE_WITH_BANK") ?? false)}
+                onClick={() => void submit(client, match, "TRADE_WITH_BANK", { giveResources: bankGive, receiveResources: bankWant })}
+              >
+                Mit Bank handeln
+              </button>
+            </div>
+          </section>
+
+          <section className="panel rail-panel">
+            <p className="eyebrow">Live Status</p>
+            <div className="rail-block">
+              <div className="status-grid">
+                <span className="micro-stat">Ich: {selfPlayer?.displayName ?? match.playerId}</span>
+                <span className="micro-stat">Longest Road: {match.longestRoadLength ?? 0}</span>
+                <span className="micro-stat">Largest Army: {match.largestArmySize ?? 0}</span>
+              </div>
+              {requiredAction === "STEAL_RESOURCE" ? (
+                <div className="choice-row">
+                  {(match.stealablePlayerIds ?? []).map((playerId) => (
+                    <button key={playerId} className="secondary-button small-button" onClick={() => void submit(client, match, "STEAL_RESOURCE", { victimPlayerId: playerId })}>
+                      {players.find((player) => player.playerId === playerId)?.displayName ?? playerId}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {snapshot.lastRejected ? (
+                <div className="inline-warning">
+                  <strong>{snapshot.lastRejected.reasonCode}</strong>: {snapshot.lastRejected.message}
+                </div>
+              ) : null}
+              <div className="cluster">
+                <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
+                  Reattach
+                </button>
+                {client.supportsSandboxTools() ? (
+                  <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
+                    Sandbox sync
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </section>
+        </aside>
       </div>
     </AppShell>
   );
 }
 
-function ActionButton({ title, enabled, onClick }: { title: string; enabled: boolean; onClick: () => void }) {
+function ActionButton({
+  label,
+  enabled,
+  active,
+  onClick,
+}: {
+  label: string;
+  enabled: boolean;
+  active?: boolean;
+  onClick: () => void;
+}) {
   return (
-    <button className={`action-button ${enabled ? "" : "secondary-button"}`} disabled={!enabled} onClick={onClick}>
-      {title}
+    <button className={`action-button ${active ? "button-active" : ""} ${enabled ? "" : "secondary-button"}`} disabled={!enabled} onClick={onClick}>
+      {label}
     </button>
   );
 }
 
-function PlacementGroup({ title, ids, onChoose }: { title: string; ids: string[]; onChoose: (id: string) => void }) {
-  return (
-    <div className="inlay p-4">
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{title}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {ids.map((id) => (
-          <button key={id} className="secondary-button rounded-full border border-[var(--line)] px-3 py-1 text-xs tracking-[0.16em] text-[var(--text-strong)]" onClick={() => onChoose(id)}>
-            {id}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PlacementSelect({
-  title,
-  ids,
-  value,
-  onChange,
-  onSubmit,
-}: {
-  title: string;
-  ids: string[];
-  value: string | undefined;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-}) {
-  return (
-    <div className="inlay p-4">
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{title}</p>
-      <select className="select-input mt-3" value={value ?? ""} onChange={(event) => onChange(event.target.value)}>
-        <option value="">Ziel waehlen</option>
-        {ids.map((id) => (
-          <option key={id} value={id}>
-            {id}
-          </option>
-        ))}
-      </select>
-      <button className="action-button mt-3" onClick={onSubmit} disabled={!value}>
-        {title}
-      </button>
-    </div>
-  );
-}
-
-function ResourcePicker({ title, onPick }: { title: string; onPick: (resourceType: ResourceType) => void }) {
-  return (
-    <div className="inlay p-4">
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{title}</p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {(["wood", "brick", "sheep", "wheat", "ore"] as ResourceType[]).map((resourceType) => (
-          <button key={resourceType} className="secondary-button rounded-full border border-[var(--line)] px-3 py-1 text-xs tracking-[0.16em] text-[var(--text-strong)]" onClick={() => onPick(resourceType)}>
-            {resourceType}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ResourceComposer({
-  title,
-  left,
-  right,
-  enabled,
-  setLeft,
-  setRight,
-  leftLabel,
-  rightLabel,
-  onSubmit,
-}: {
-  title: string;
-  left: ResourceCounts;
-  right: ResourceCounts;
-  enabled: boolean;
-  setLeft: (next: ResourceCounts) => void;
-  setRight: (next: ResourceCounts) => void;
-  leftLabel: string;
-  rightLabel: string;
-  onSubmit: () => void;
-}) {
-  return (
-    <div className="inlay p-4">
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{title}</p>
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <ResourceStepper title={leftLabel} resources={left} onChange={setLeft} />
-        <ResourceStepper title={rightLabel} resources={right} onChange={setRight} />
-      </div>
-      <button className="action-button mt-4" disabled={!enabled} onClick={onSubmit}>
-        {title}
-      </button>
-    </div>
-  );
-}
-
-function ResourceStepper({
+function ResourceEditor({
   title,
   resources,
   onChange,
 }: {
-  title: string;
+  title?: string;
   resources: ResourceCounts;
   onChange: (next: ResourceCounts) => void;
 }) {
   return (
-    <div>
-      <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">{title}</p>
-      <div className="mt-3 grid gap-2">
+    <div className="resource-editor">
+      {title ? <p className="editor-title">{title}</p> : null}
+      <div className="editor-grid">
         {resourceEntries(resources).map((resource) => (
-          <div key={resource.type} className="card-surface flex items-center justify-between gap-3 px-3 py-2">
-            <span className="text-sm">{resource.label}</span>
-            <div className="flex items-center gap-2">
-              <button className="secondary-button rounded-full border border-[#baa17d] px-2 py-1 text-xs text-[#5f4529]" onClick={() => onChange(numberStep(resources, resource.type, -1))}>-</button>
-              <span className="min-w-5 text-center text-sm">{resource.count}</span>
-              <button className="secondary-button rounded-full border border-[#baa17d] px-2 py-1 text-xs text-[#5f4529]" onClick={() => onChange(numberStep(resources, resource.type, 1))}>+</button>
+          <div key={resource.type} className="editor-row">
+            <span>{resource.label}</span>
+            <div className="editor-controls">
+              <button className="step-button" onClick={() => onChange(stepResources(resources, resource.type, -1))}>
+                -
+              </button>
+              <span className="step-value">{resource.count}</span>
+              <button className="step-button" onClick={() => onChange(stepResources(resources, resource.type, 1))}>
+                +
+              </button>
             </div>
           </div>
         ))}
       </div>
     </div>
   );
+}
+
+function resourceSummary(resources: ResourceCounts) {
+  const entries = resourceEntries(resources).filter((entry) => entry.count > 0);
+  if (entries.length === 0) {
+    return "nichts";
+  }
+
+  return entries.map((entry) => `${entry.label} x${entry.count}`).join(", ");
 }

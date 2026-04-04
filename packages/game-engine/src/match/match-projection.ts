@@ -1,6 +1,9 @@
 import type {
+  DevelopmentCardCounts,
   DevelopmentCardResolution,
+  MatchActionContext,
   MatchCommandType,
+  MatchPlayerSummaryView,
   MatchState,
   MatchTradeView,
   MatchView,
@@ -35,6 +38,11 @@ export function projectMatchView(match: MatchState, viewerPlayerId: string): Mat
   const discardRequiredCount = deriveRequiredDiscardCount(match, viewerPlayerId);
   const allowedActions = deriveAllowedActions(match, viewerPlayerId);
   const requiredAction = deriveRequiredAction(match, viewerPlayerId);
+  const legalSetupPlacements = deriveLegalSetupPlacements(match, viewerPlayerId);
+  const legalRoadEdgeIds = deriveLegalRoadEdgeIds(match, viewerPlayerId, legalSetupPlacements);
+  const legalSettlementIntersectionIds = deriveLegalSettlementIntersectionIds(match, viewerPlayerId, legalSetupPlacements);
+  const legalCityIntersectionIds = deriveLegalCityIntersectionIds(match, viewerPlayerId);
+  const legalRobberHexIds = deriveLegalRobberHexIds(match, viewerPlayerId);
 
   return {
     matchId: match.matchId,
@@ -44,9 +52,14 @@ export function projectMatchView(match: MatchState, viewerPlayerId: string): Mat
     playerOrder: match.playerOrder,
     allowedActions,
     requiredAction,
+    actionContext: deriveActionContext(match, viewerPlayerId, discardRequiredCount),
     setupStep: match.setup?.step,
     currentSetupPlayerId: match.setup?.currentPlayerId,
-    legalSetupPlacements: deriveLegalSetupPlacements(match, viewerPlayerId),
+    legalSetupPlacements,
+    legalRoadEdgeIds,
+    legalSettlementIntersectionIds,
+    legalCityIntersectionIds,
+    legalRobberHexIds,
     activePlayerId: match.turn?.activePlayerId,
     turnPhase: match.turn?.phase,
     lastRoll: match.turn?.lastRoll,
@@ -63,6 +76,7 @@ export function projectMatchView(match: MatchState, viewerPlayerId: string): Mat
     stealablePlayerIds:
       match.turn?.activePlayerId === viewerPlayerId ? match.turn.stealablePlayerIds : undefined,
     tradeOffer,
+    players: projectPlayers(match, viewerPlayerId, visiblePoints),
   };
 }
 
@@ -196,6 +210,82 @@ function deriveLegalSetupPlacements(match: MatchState, viewerPlayerId: string): 
   return undefined;
 }
 
+function deriveLegalRoadEdgeIds(
+  match: MatchState,
+  viewerPlayerId: string,
+  legalSetupPlacements: string[] | undefined,
+): string[] | undefined {
+  if (match.status === "match_setup" && deriveSetupRequiredAction(match, viewerPlayerId) === "PLACE_INITIAL_ROAD") {
+    return legalSetupPlacements;
+  }
+
+  if (match.status !== "match_in_progress") {
+    return undefined;
+  }
+
+  if (
+    match.turn?.phase === "devcard_resolution" &&
+    (match.turn.developmentCardResolution === "road_building_place_1" ||
+      match.turn.developmentCardResolution === "road_building_place_2")
+  ) {
+    return Object.keys(match.board?.edges ?? {}).filter((edgeId) =>
+      isLegal(() => buildRoad(match, viewerPlayerId, edgeId, { now: PROJECTION_NOW })),
+    );
+  }
+
+  if (!match.turn || match.turn.activePlayerId !== viewerPlayerId) {
+    return undefined;
+  }
+
+  if (!["action_phase", "devcard_resolution"].includes(match.turn.phase)) {
+    return undefined;
+  }
+
+  return Object.keys(match.board?.edges ?? {}).filter((edgeId) =>
+    isLegal(() => buildRoad(match, viewerPlayerId, edgeId, { now: PROJECTION_NOW })),
+  );
+}
+
+function deriveLegalSettlementIntersectionIds(
+  match: MatchState,
+  viewerPlayerId: string,
+  legalSetupPlacements: string[] | undefined,
+): string[] | undefined {
+  if (match.status === "match_setup" && deriveSetupRequiredAction(match, viewerPlayerId) === "PLACE_INITIAL_SETTLEMENT") {
+    return legalSetupPlacements;
+  }
+
+  if (match.status !== "match_in_progress" || match.turn?.activePlayerId !== viewerPlayerId || match.turn.phase !== "action_phase") {
+    return undefined;
+  }
+
+  return Object.keys(match.board?.intersections ?? {}).filter((intersectionId) =>
+    isLegal(() => buildSettlement(match, viewerPlayerId, intersectionId, { now: PROJECTION_NOW })),
+  );
+}
+
+function deriveLegalCityIntersectionIds(match: MatchState, viewerPlayerId: string): string[] | undefined {
+  if (match.status !== "match_in_progress" || match.turn?.activePlayerId !== viewerPlayerId || match.turn.phase !== "action_phase") {
+    return undefined;
+  }
+
+  return Object.keys(match.board?.intersections ?? {}).filter((intersectionId) =>
+    isLegal(() => upgradeCity(match, viewerPlayerId, intersectionId, { now: PROJECTION_NOW })),
+  );
+}
+
+function deriveLegalRobberHexIds(match: MatchState, viewerPlayerId: string): string[] | undefined {
+  if (
+    match.status !== "match_in_progress" ||
+    match.turn?.phase !== "robber_pending" ||
+    match.turn.activePlayerId !== viewerPlayerId
+  ) {
+    return undefined;
+  }
+
+  return Object.keys(match.board?.hexes ?? {}).filter((hexId) => hexId !== match.board?.robberHexId);
+}
+
 function deriveSetupActions(match: MatchState, viewerPlayerId: string): MatchCommandType[] {
   const requiredAction = deriveSetupRequiredAction(match, viewerPlayerId);
   return requiredAction ? [requiredAction] : [];
@@ -224,6 +314,133 @@ function deriveRequiredDiscardCount(match: MatchState, viewerPlayerId: string): 
 
   const viewer = match.players?.find((player) => player.playerId === viewerPlayerId);
   return viewer ? Math.floor(sumResourceCounts(viewer.resources) / 2) : undefined;
+}
+
+function deriveActionContext(
+  match: MatchState,
+  viewerPlayerId: string,
+  discardRequiredCount: number | undefined,
+): MatchActionContext | undefined {
+  const requiredAction = deriveRequiredAction(match, viewerPlayerId);
+  const isOwnTurn = match.turn?.activePlayerId === viewerPlayerId || match.setup?.currentPlayerId === viewerPlayerId;
+
+  if (!requiredAction) {
+    if (match.status === "match_finished") {
+      return {
+        title: "Match beendet",
+        description: "Das Spiel ist entschieden. Postgame und Zusammenfassung bleiben sichtbar.",
+        tone: "success",
+      };
+    }
+
+    if (match.status === "match_setup") {
+      return {
+        title: isOwnTurn ? "Warte auf deinen Setup-Zug" : "Setup laeuft",
+        description: "Die Reihenfolge folgt der Snake-Order. Sobald du dran bist, werden legale Felder hervorgehoben.",
+        tone: "neutral",
+      };
+    }
+
+    return {
+      title: isOwnTurn ? "Du bist am Zug" : "Gegner am Zug",
+      description: isOwnTurn
+        ? "Waehle eine Aktion in der rechten Leiste oder direkt auf dem Brett."
+        : "Beobachte Brett, Handel und Event-Log, bis du reagieren kannst.",
+      tone: isOwnTurn ? "primary" : "neutral",
+    };
+  }
+
+  switch (requiredAction) {
+    case "PLACE_INITIAL_SETTLEMENT":
+      return {
+        title: "Start-Siedlung setzen",
+        description: "Waehle direkt auf dem Brett eine legale Kreuzung fuer deine Siedlung.",
+        tone: "primary",
+      };
+    case "PLACE_INITIAL_ROAD":
+      return {
+        title: "Start-Strasse setzen",
+        description: "Waehle eine Kante, die an deine soeben platzierte Siedlung grenzt.",
+        tone: "primary",
+      };
+    case "ROLL_DICE":
+      return {
+        title: "Wuerfeln",
+        description: "Ohne Wurf startet keine Produktion und kein normaler Zug.",
+        tone: "primary",
+      };
+    case "DISCARD_RESOURCES":
+      return {
+        title: "Ressourcen abwerfen",
+        description: `Lege exakt ${discardRequiredCount ?? 0} Karten ab, bevor der Raeuber weiter aufgeloest wird.`,
+        tone: "danger",
+      };
+    case "MOVE_ROBBER":
+      return {
+        title: "Raeuber versetzen",
+        description: "Waehle ein anderes Hex. Anschliessend folgt gegebenenfalls der Diebstahl.",
+        tone: "warning",
+      };
+    case "STEAL_RESOURCE":
+      return {
+        title: "Spieler bestehlen",
+        description: "Waehle einen legalen Zielspieler neben dem neuen Raeuber-Feld.",
+        tone: "warning",
+      };
+    case "PICK_YEAR_OF_PLENTY_RESOURCE":
+      return {
+        title: "Year of Plenty",
+        description: "Waehle jetzt die naechste Ressource fuer den Karteneffekt.",
+        tone: "primary",
+      };
+    case "PICK_MONOPOLY_RESOURCE_TYPE":
+      return {
+        title: "Monopoly",
+        description: "Bestimme den Ressourcentyp, den du von allen Gegnern einsammeln willst.",
+        tone: "primary",
+      };
+    case "RESPOND_TRADE":
+      return {
+        title: "Auf Angebot reagieren",
+        description: "Nimm den Handel an oder lehne ab. Bis dahin bleibt der Zustand blockiert.",
+        tone: "warning",
+      };
+    case "BUILD_ROAD":
+      return {
+        title: "Strassenbau abschliessen",
+        description: "Road Building verlangt jetzt eine weitere legale Strasse auf dem Brett.",
+        tone: "primary",
+      };
+    default:
+      return {
+        title: requiredAction.replaceAll("_", " "),
+        description: "Diese Aktion hat momentan Vorrang vor allen anderen Zugschritten.",
+        tone: "warning",
+      };
+  }
+}
+
+function projectPlayers(
+  match: MatchState,
+  viewerPlayerId: string,
+  visiblePoints: Record<string, number> | undefined,
+): MatchPlayerSummaryView[] {
+  return match.playerOrder.map((playerId, turnOrder) => {
+    const player = match.players?.find((entry) => entry.playerId === playerId);
+    const tradeResponse = match.turn?.tradeOffer?.responses[playerId];
+
+    return {
+      playerId,
+      turnOrder,
+      visiblePoints: visiblePoints?.[playerId] ?? 0,
+      resourceCardCount: player ? sumResourceCounts(player.resources) : 0,
+      developmentCardCount: player ? developmentCardCount(player.developmentCards) : 0,
+      playedKnightCount: player?.playedKnightCount ?? 0,
+      isActive: match.turn?.activePlayerId === playerId,
+      isSelf: playerId === viewerPlayerId,
+      tradeResponse,
+    };
+  });
 }
 
 function projectTradeOffer(match: MatchState, viewerPlayerId: string): MatchTradeView | undefined {
@@ -394,6 +611,14 @@ function canTradeWithBank(match: MatchState, viewerPlayerId: string): boolean {
   }
 
   return false;
+}
+
+function developmentCardCount(cards: DevelopmentCardCounts | undefined): number {
+  if (!cards) {
+    return 0;
+  }
+
+  return cards.knight + cards.victory_point + cards.year_of_plenty + cards.monopoly + cards.road_building;
 }
 
 function isLegal(action: () => unknown): boolean {

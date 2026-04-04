@@ -105,6 +105,7 @@ const CUBE_CORNER_OFFSETS = [
 interface BoardTemplate {
   hexOrder: string[];
   hexCoords: Record<string, { q: number; r: number }>;
+  hexCenters: Record<string, { x: number; y: number }>;
   adjacentHexIds: Record<string, string[]>;
   hexIntersectionIds: Record<string, string[]>;
   hexEdgeIds: Record<string, string[]>;
@@ -186,6 +187,7 @@ export function generateBoard(seed: string): GeneratedBoard {
     boardHexes[hexId] = {
       hexId,
       axialCoord: BOARD_TEMPLATE.hexCoords[hexId]!,
+      uiCenter: BOARD_TEMPLATE.hexCenters[hexId]!,
       resourceType,
       tokenNumber,
       isDesert,
@@ -541,6 +543,7 @@ function ensureRoadStep(step: SetupStep): void {
 function buildBoardTemplate(): BoardTemplate {
   const hexOrder: string[] = [];
   const hexCoords: Record<string, { q: number; r: number }> = {};
+  const hexCenters: Record<string, { x: number; y: number }> = {};
   const hexByCoord = new Map<string, string>();
   const hexIntersectionIds: Record<string, string[]> = {};
   const hexEdgeIds: Record<string, string[]> = {};
@@ -563,9 +566,10 @@ function buildBoardTemplate(): BoardTemplate {
 
       hexOrder.push(hexId);
       hexCoords[hexId] = { q, r };
+      hexCenters[hexId] = hexToPixel(q, r);
       hexByCoord.set(`${q},${r}`, hexId);
 
-      const center = hexToPixel(q, r);
+      const center = hexCenters[hexId]!;
       const cubeCenter = axialToCube(q, r);
       const cornerIds: string[] = [];
       const edgeIds: string[] = [];
@@ -583,6 +587,7 @@ function buildBoardTemplate(): BoardTemplate {
           intersectionPoints.set(intersectionId, point);
           intersections[intersectionId] = {
             intersectionId,
+            uiPosition: point,
             adjacentHexIds: [],
             adjacentEdgeIds: [],
             adjacentIntersectionIds: [],
@@ -605,6 +610,7 @@ function buildBoardTemplate(): BoardTemplate {
           edgesByKey.set(edgeKey, edgeId);
           edges[edgeId] = {
             edgeId,
+            uiMidpoint: edgeMidpointById(a, b, intersectionPoints),
             intersectionAId: a,
             intersectionBId: b,
             adjacentHexIds: [],
@@ -657,6 +663,7 @@ function buildBoardTemplate(): BoardTemplate {
   return {
     hexOrder,
     hexCoords,
+    hexCenters,
     adjacentHexIds,
     hexIntersectionIds,
     hexEdgeIds,
@@ -696,6 +703,20 @@ function hasInvalidHighTokenAdjacency(terrainOrder: TerrainType[], tokenOrder: r
 function edgeMidpoint(edge: BoardEdge, intersectionPoints: Map<string, { x: number; y: number }>) {
   const a = intersectionPoints.get(edge.intersectionAId)!;
   const b = intersectionPoints.get(edge.intersectionBId)!;
+
+  return {
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  };
+}
+
+function edgeMidpointById(
+  intersectionAId: string,
+  intersectionBId: string,
+  intersectionPoints: Map<string, { x: number; y: number }>,
+) {
+  const a = intersectionPoints.get(intersectionAId)!;
+  const b = intersectionPoints.get(intersectionBId)!;
 
   return {
     x: (a.x + b.x) / 2,
