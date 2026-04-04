@@ -51,6 +51,7 @@ interface SessionState {
   eventLog: ServerMessage[];
   lastMessage?: ServerMessage;
   lastRejected?: CommandRejectedMessage;
+  snapshotCache?: MatchSnapshotState;
 }
 
 interface MockSeatIdentity {
@@ -73,6 +74,9 @@ const matchListeners = new Set<Listener>();
 const sessionStates = new Map<string, SessionState>();
 const mockSeatsByRoomCode = new Map<string, MockSeatIdentity[]>();
 let pollHandle: number | undefined;
+const EMPTY_SNAPSHOT: MatchSnapshotState = {
+  eventLog: [],
+};
 
 function emitRoom() {
   for (const listener of roomListeners) {
@@ -112,6 +116,9 @@ function ensureSessionState(session: BrowserSessionState): SessionState {
     existing = {
       browserSession: session,
       eventLog: [],
+      snapshotCache: {
+        eventLog: [],
+      },
     };
     sessionStates.set(session.sessionId, existing);
   } else {
@@ -121,9 +128,7 @@ function ensureSessionState(session: BrowserSessionState): SessionState {
 }
 
 function getEmptySnapshot(): MatchSnapshotState {
-  return {
-    eventLog: [],
-  };
+  return EMPTY_SNAPSHOT;
 }
 
 function getSnapshotForSession(sessionId: string): MatchSnapshotState {
@@ -132,7 +137,11 @@ function getSnapshotForSession(sessionId: string): MatchSnapshotState {
     return getEmptySnapshot();
   }
 
-  return {
+  if (state.snapshotCache) {
+    return state.snapshotCache;
+  }
+
+  state.snapshotCache = {
     ...(state.room ? { room: state.room } : {}),
     ...(state.match ? { match: state.match } : {}),
     ...(state.board ? { board: state.board } : {}),
@@ -141,6 +150,8 @@ function getSnapshotForSession(sessionId: string): MatchSnapshotState {
     ...(state.lastRejected ? { lastRejected: state.lastRejected } : {}),
     eventLog: state.eventLog,
   };
+
+  return state.snapshotCache;
 }
 
 function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): MatchSnapshotState {
@@ -178,11 +189,20 @@ function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): 
     ...(state.match ? { matchId: state.match.matchId } : {}),
   };
   state.browserSession = nextSession;
+  state.snapshotCache = {
+    ...(state.room ? { room: state.room } : {}),
+    ...(state.match ? { match: state.match } : {}),
+    ...(state.board ? { board: state.board } : {}),
+    ...(state.roomCode ? { roomCode: state.roomCode } : {}),
+    ...(state.lastMessage ? { lastMessage: state.lastMessage } : {}),
+    ...(state.lastRejected ? { lastRejected: state.lastRejected } : {}),
+    eventLog: state.eventLog,
+  };
   writeBrowserSession(nextSession);
 
   emitRoom();
   emitMatch();
-  return getSnapshotForSession(sessionId);
+  return state.snapshotCache;
 }
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
