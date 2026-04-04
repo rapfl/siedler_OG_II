@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-04-04T14:20:55.000Z",
+  "updatedAt": "2026-04-04T15:39:11.210Z",
   "items": [
     {
       "id": "OPS-001",
@@ -55,7 +55,7 @@
     {
       "id": "SETUP-002",
       "title": "Finish setup placement legality and start-resource flow",
-      "status": "ready",
+      "status": "in_progress",
       "priority": "P0",
       "area": "engine",
       "dependencies": [
@@ -74,7 +74,8 @@
       "verification": [
         "npm test"
       ],
-      "notes": "Dependent on stable seeded board assumptions."
+      "notes": "Dependent on stable seeded board assumptions.",
+      "claimedAt": "2026-04-04T15:39:11.210Z"
     },
     {
       "id": "TURN-001",

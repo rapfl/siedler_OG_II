@@ -17,6 +17,7 @@
     "@siedler/realtime": "0.1.0",
     "@siedler/shared-types": "0.1.0",
     "next": "^15.5.3",
+    "pixi.js": "^8.17.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "ws": "^8.18.3"

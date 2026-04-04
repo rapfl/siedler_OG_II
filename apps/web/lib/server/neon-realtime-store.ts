@@ -3,6 +3,7 @@ import { InMemoryRealtimeService, type InMemoryRealtimeServiceState } from "@sie
 
 const STATE_KEY = "singleton";
 const MAX_MUTATION_RETRIES = 8;
+let inMemoryFallbackState: InMemoryRealtimeServiceState | undefined;
 
 interface StoredRealtimeStateRow {
   payload: InMemoryRealtimeServiceState;
@@ -15,6 +16,10 @@ function databaseUrl(): string {
     throw new Error("DATABASE_URL is required for the Neon-backed realtime store.");
   }
   return value;
+}
+
+function hasDatabaseUrl(): boolean {
+  return typeof process.env.DATABASE_URL === "string" && process.env.DATABASE_URL.length > 0;
 }
 
 function createSql() {
@@ -81,10 +86,23 @@ async function readRealtimeStateRow(): Promise<StoredRealtimeStateRow> {
 }
 
 export async function ensureRealtimeSchema(): Promise<void> {
+  if (!hasDatabaseUrl()) {
+    return;
+  }
   await ensureRealtimeSchemaInternal();
 }
 
 export async function loadRealtimeService(): Promise<InMemoryRealtimeService> {
+  if (!hasDatabaseUrl()) {
+    const service = new InMemoryRealtimeService();
+    if (inMemoryFallbackState) {
+      service.importState(inMemoryFallbackState);
+    } else {
+      inMemoryFallbackState = service.exportState();
+    }
+    return service;
+  }
+
   const row = await readRealtimeStateRow();
   const service = new InMemoryRealtimeService();
   service.importState(row.payload);
@@ -92,6 +110,17 @@ export async function loadRealtimeService(): Promise<InMemoryRealtimeService> {
 }
 
 export async function mutateRealtimeState<T>(mutator: (service: InMemoryRealtimeService) => T | Promise<T>): Promise<T> {
+  if (!hasDatabaseUrl()) {
+    const service = new InMemoryRealtimeService();
+    if (inMemoryFallbackState) {
+      service.importState(inMemoryFallbackState);
+    }
+
+    const result = await mutator(service);
+    inMemoryFallbackState = service.exportState();
+    return result;
+  }
+
   await ensureRealtimeSchemaInternal();
 
   for (let attempt = 0; attempt < MAX_MUTATION_RETRIES; attempt += 1) {
@@ -123,6 +152,13 @@ export async function mutateRealtimeState<T>(mutator: (service: InMemoryRealtime
 }
 
 export async function checkDatabaseHealth() {
+  if (!hasDatabaseUrl()) {
+    return {
+      database: "in_memory" as const,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
   await ensureRealtimeSchemaInternal();
   const sql = createSql();
   const rows = (await sql`SELECT NOW()::text AS now`) as Array<{ now: string }>;

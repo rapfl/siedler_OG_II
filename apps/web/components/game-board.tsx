@@ -1,9 +1,11 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { buildPlayerLookup, playerColorToken } from "../lib/ui/view-model";
-import type { BoardUiPoint, GeneratedBoard, MatchCommandType, MatchView, RoomView } from "@siedler/shared-types";
+import { createBoardPresentation } from "../lib/ui/board-presentation";
+import { buildPlayerLookup } from "../lib/ui/view-model";
+import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
+import type { GeneratedBoard, MatchCommandType, MatchView, RoomView } from "@siedler/shared-types";
 
 interface GameBoardProps {
   board: GeneratedBoard | undefined;
@@ -13,16 +15,45 @@ interface GameBoardProps {
   onHexSelect?: (hexId: string) => void;
   onIntersectionSelect?: (intersectionId: string) => void;
   onEdgeSelect?: (edgeId: string) => void;
+  onHoverTargetChange?: (target: string | undefined) => void;
 }
 
-const RESOURCE_CLASS: Record<string, string> = {
-  wood: "hex-wood",
-  brick: "hex-brick",
-  sheep: "hex-sheep",
-  wheat: "hex-wheat",
-  ore: "hex-ore",
-  desert: "hex-desert",
+const RESOURCE_COLORS: Record<string, number> = {
+  wood: 0x1f7650,
+  brick: 0x8f3a3a,
+  sheep: 0x7fbf77,
+  wheat: 0xcf9f3f,
+  ore: 0x6874aa,
+  desert: 0x9b896b,
 };
+
+const PLAYER_COLORS: Record<string, number> = {
+  red: 0xd90368,
+  blue: 0x3b82f6,
+  white: 0xe3dfff,
+  orange: 0xfb8b24,
+  neutral: 0xb9a9d6,
+};
+
+const harborStyle = new TextStyle({
+  fill: 0xf8e9d7,
+  fontSize: 11,
+  fontWeight: "700",
+  letterSpacing: 1.2,
+});
+
+const tokenStyle = new TextStyle({
+  fill: 0x23140d,
+  fontSize: 18,
+  fontWeight: "700",
+});
+
+const resourceStyle = new TextStyle({
+  fill: 0xfff1dd,
+  fontSize: 10,
+  fontWeight: "700",
+  letterSpacing: 1.4,
+});
 
 export function GameBoard({
   board,
@@ -32,339 +63,282 @@ export function GameBoard({
   onHexSelect,
   onIntersectionSelect,
   onEdgeSelect,
+  onHoverTargetChange,
 }: GameBoardProps) {
-  const layout = useMemo(() => createBoardLayout(board), [board]);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const appRef = useRef<Application | null>(null);
+  const renderRef = useRef<() => void>(() => {});
+  const [renderError, setRenderError] = useState<string>();
   const playerLookup = useMemo(() => buildPlayerLookup(room), [room]);
 
-  if (!board || !match) {
-    return (
-      <div className="board-shell board-empty board-stage">
-        <p>Kein Brett geladen. Starte ein Match oder synchronisiere den Snapshot.</p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
 
-  const legalHexIds = new Set(mode === "MOVE_ROBBER" ? match.legalRobberHexIds ?? [] : []);
-  const legalIntersectionIds = new Set(
-    mode === "PLACE_INITIAL_SETTLEMENT" || mode === "BUILD_SETTLEMENT"
-      ? match.legalSettlementIntersectionIds ?? []
-      : mode === "UPGRADE_CITY"
-        ? match.legalCityIntersectionIds ?? []
-        : [],
-  );
-  const legalEdgeIds = new Set(
-    mode === "PLACE_INITIAL_ROAD" || mode === "BUILD_ROAD" ? match.legalRoadEdgeIds ?? [] : [],
-  );
+    let disposed = false;
+    const app = new Application();
+    appRef.current = app;
+
+    const setup = async () => {
+      try {
+        await app.init({
+          resizeTo: host,
+          backgroundAlpha: 0,
+          antialias: true,
+          autoDensity: true,
+        });
+
+        if (disposed) {
+          app.destroy();
+          return;
+        }
+
+        host.replaceChildren(app.canvas);
+        renderRef.current();
+      } catch (error) {
+        setRenderError(error instanceof Error ? error.message : "Pixi renderer konnte nicht initialisiert werden.");
+      }
+    };
+
+    void setup();
+
+    const observer = new ResizeObserver(() => {
+      renderRef.current();
+    });
+    observer.observe(host);
+
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      onHoverTargetChange?.(undefined);
+      app.destroy();
+      appRef.current = null;
+    };
+  }, [onHoverTargetChange]);
+
+  renderRef.current = () => {
+    const app = appRef.current;
+    const host = hostRef.current;
+    if (!app || !host || !board || !match) {
+      return;
+    }
+
+    try {
+      setRenderError(undefined);
+
+      const width = Math.max(host.clientWidth, 320);
+      const height = Math.max(host.clientHeight, 320);
+      const presentation = createBoardPresentation(
+        board,
+        width,
+        height,
+        new Map(Array.from(playerLookup.entries()).map(([playerId, player]) => [playerId, player.color])),
+      );
+
+      const legalHexIds = new Set(mode === "MOVE_ROBBER" ? match.legalRobberHexIds ?? [] : []);
+      const legalIntersectionIds = new Set(
+        mode === "PLACE_INITIAL_SETTLEMENT" || mode === "BUILD_SETTLEMENT"
+          ? match.legalSettlementIntersectionIds ?? []
+          : mode === "UPGRADE_CITY"
+            ? match.legalCityIntersectionIds ?? []
+            : [],
+      );
+      const legalEdgeIds = new Set(
+        mode === "PLACE_INITIAL_ROAD" || mode === "BUILD_ROAD" ? match.legalRoadEdgeIds ?? [] : [],
+      );
+
+      for (const child of app.stage.removeChildren()) {
+        child.destroy({ children: true });
+      }
+
+      const root = new Container();
+      app.stage.addChild(root);
+
+      const backdrop = new Graphics();
+      backdrop.roundRect(0, 0, width, height, 32);
+      backdrop.fill(0x1b130e);
+      root.addChild(backdrop);
+
+      const vignette = new Graphics();
+      vignette.ellipse(width / 2, height / 2, width * 0.44, height * 0.4);
+      vignette.fill({ color: 0x6b3f18, alpha: 0.12 });
+      root.addChild(vignette);
+
+      for (const harbor of presentation.harbors) {
+        const label = new Text(harborLabel(harbor.harborType), harborStyle);
+        label.anchor.set(0.5);
+        label.x = harbor.labelPosition.x;
+        label.y = harbor.labelPosition.y;
+        label.alpha = 0.9;
+        root.addChild(label);
+      }
+
+      for (const hex of presentation.hexes) {
+        const shape = new Graphics();
+        shape.poly(hex.polygon.flatMap((point) => [point.x, point.y]));
+        shape.fill(resolveResourceColor(hex.resourceType), 0.97);
+        shape.stroke({
+          color: legalHexIds.has(hex.hexId) ? 0xfb8b24 : 0xf8e9d7,
+          width: legalHexIds.has(hex.hexId) ? 4 : 2,
+          alpha: legalHexIds.has(hex.hexId) ? 0.95 : 0.16,
+        });
+        if (legalHexIds.has(hex.hexId)) {
+          enableInteraction(
+            shape,
+            () => onHexSelect?.(hex.hexId),
+            () => onHoverTargetChange?.(`Raeuber auf ${hex.hexId}`),
+            () => onHoverTargetChange?.(undefined),
+          );
+        }
+        root.addChild(shape);
+
+        const token = new Graphics();
+        token.circle(hex.center.x, hex.center.y, 18);
+        token.fill(0xf6ecd6);
+        token.stroke({ color: 0x5c3116, width: 2, alpha: 0.28 });
+        root.addChild(token);
+
+        const tokenText = new Text(hex.tokenNumber?.toString() ?? "D", tokenStyle);
+        tokenText.anchor.set(0.5);
+        tokenText.x = hex.center.x;
+        tokenText.y = hex.center.y;
+        root.addChild(tokenText);
+
+        const resourceText = new Text(resourceLabel(hex.resourceType), resourceStyle);
+        resourceText.anchor.set(0.5);
+        resourceText.x = hex.center.x;
+        resourceText.y = hex.center.y - 42;
+        resourceText.alpha = 0.84;
+        root.addChild(resourceText);
+
+        if (hex.hasRobber) {
+          const robber = new Graphics();
+          robber.circle(hex.center.x + 38, hex.center.y - 36, 14);
+          robber.fill(0x150a13);
+          robber.stroke({ color: 0xfb8b24, width: 2, alpha: 0.7 });
+          root.addChild(robber);
+        }
+      }
+
+      for (const edge of presentation.edges) {
+        const line = new Graphics();
+        line.moveTo(edge.a.x, edge.a.y);
+        line.lineTo(edge.b.x, edge.b.y);
+        if (edge.ownerColor) {
+          line.stroke({ color: resolvePlayerColor(edge.ownerColor), width: 8, alpha: 0.96 });
+        } else {
+          line.stroke({
+            color: legalEdgeIds.has(edge.edgeId) ? 0xfb8b24 : 0xf6e8d0,
+            width: legalEdgeIds.has(edge.edgeId) ? 6 : 3,
+            alpha: legalEdgeIds.has(edge.edgeId) ? 0.92 : 0.13,
+          });
+        }
+        root.addChild(line);
+
+        if (legalEdgeIds.has(edge.edgeId)) {
+          const hit = new Graphics();
+          hit.moveTo(edge.a.x, edge.a.y);
+          hit.lineTo(edge.b.x, edge.b.y);
+          hit.stroke({ color: 0xffffff, width: 20, alpha: 0.001 });
+          enableInteraction(
+            hit,
+            () => onEdgeSelect?.(edge.edgeId),
+            () => onHoverTargetChange?.(`Strasse auf ${edge.edgeId}`),
+            () => onHoverTargetChange?.(undefined),
+          );
+          root.addChild(hit);
+        }
+      }
+
+      for (const intersection of presentation.intersections) {
+        if (intersection.building) {
+          const building = new Graphics();
+          const color = PLAYER_COLORS[intersection.building.ownerColor ?? "neutral"] ?? PLAYER_COLORS.neutral;
+          if (intersection.building.buildingType === "city") {
+            building.roundRect(intersection.position.x - 12, intersection.position.y - 12, 24, 24, 6);
+          } else {
+            building.poly([
+              intersection.position.x,
+              intersection.position.y - 16,
+              intersection.position.x + 14,
+              intersection.position.y - 2,
+              intersection.position.x + 14,
+              intersection.position.y + 14,
+              intersection.position.x - 14,
+              intersection.position.y + 14,
+              intersection.position.x - 14,
+              intersection.position.y - 2,
+            ]);
+          }
+          building.fill(color);
+          building.stroke({ color: 0xffffff, width: 2, alpha: 0.18 });
+          root.addChild(building);
+          continue;
+        }
+
+        const dot = new Graphics();
+        dot.circle(intersection.position.x, intersection.position.y, legalIntersectionIds.has(intersection.intersectionId) ? 8 : 5);
+        dot.fill(legalIntersectionIds.has(intersection.intersectionId) ? 0xfb8b24 : 0xf6e8d0);
+        dot.alpha = legalIntersectionIds.has(intersection.intersectionId) ? 1 : 0.46;
+        root.addChild(dot);
+
+        if (legalIntersectionIds.has(intersection.intersectionId)) {
+          const ring = new Graphics();
+          ring.circle(intersection.position.x, intersection.position.y, 17);
+          ring.stroke({ color: 0xfb8b24, width: 3, alpha: 0.78 });
+          root.addChild(ring);
+
+          const hit = new Graphics();
+          hit.circle(intersection.position.x, intersection.position.y, 22);
+          hit.fill({ color: 0xffffff, alpha: 0.001 });
+          enableInteraction(
+            hit,
+            () => onIntersectionSelect?.(intersection.intersectionId),
+            () => onHoverTargetChange?.(`Baupunkt ${intersection.intersectionId}`),
+            () => onHoverTargetChange?.(undefined),
+          );
+          root.addChild(hit);
+        }
+      }
+    } catch (error) {
+      setRenderError(error instanceof Error ? error.message : "Pixi renderer konnte den aktuellen Spielzustand nicht zeichnen.");
+    }
+  };
+
+  useEffect(() => {
+    renderRef.current();
+  }, [board, room, match, mode, playerLookup, onEdgeSelect, onHexSelect, onHoverTargetChange, onIntersectionSelect]);
 
   return (
-    <div className="board-shell board-stage">
-      <svg
-        className="game-board"
-        viewBox={`${layout.bounds.minX} ${layout.bounds.minY} ${layout.bounds.width} ${layout.bounds.height}`}
-        role="img"
-        aria-label="Spielbrett"
-      >
-        <defs>
-          <filter id="boardGlow" x="-20%" y="-20%" width="140%" height="140%">
-            <feDropShadow dx="0" dy="0.1" stdDeviation="0.22" floodColor="rgba(5, 5, 16, 0.4)" />
-          </filter>
-          <filter id="hexTexture" x="-20%" y="-20%" width="140%" height="140%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="11" result="noise" />
-            <feColorMatrix
-              in="noise"
-              type="matrix"
-              values="1 0 0 0 0
-                      0 1 0 0 0
-                      0 0 1 0 0
-                      0 0 0 0.08 0"
-            />
-            <feBlend in="SourceGraphic" mode="overlay" />
-          </filter>
-          <radialGradient id="boardVignette" cx="50%" cy="48%" r="58%">
-            <stop offset="0%" stopColor="rgba(255,255,255,0.03)" />
-            <stop offset="70%" stopColor="rgba(255,255,255,0)" />
-            <stop offset="100%" stopColor="rgba(0,0,0,0.34)" />
-          </radialGradient>
-        </defs>
-
-        <rect
-          x={layout.bounds.minX}
-          y={layout.bounds.minY}
-          width={layout.bounds.width}
-          height={layout.bounds.height}
-          className="board-backdrop"
-          rx="1.6"
-        />
-        <rect
-          x={layout.bounds.minX}
-          y={layout.bounds.minY}
-          width={layout.bounds.width}
-          height={layout.bounds.height}
-          fill="url(#boardVignette)"
-          rx="1.6"
-        />
-
-        {Object.values(board.harbors).map((harbor) => {
-          const a = layout.intersectionPositions[harbor.intersectionIds[0]];
-          const b = layout.intersectionPositions[harbor.intersectionIds[1]];
-          if (!a || !b) {
-            return null;
-          }
-
-          const { x, y } = positionHarborLabel(a, b, layout.center);
-          return (
-            <text key={harbor.harborId} x={x} y={y} className="harbor-label">
-              {harborLabel(harbor.harborType)}
-            </text>
-          );
-        })}
-
-        {board.hexOrder.map((hexId) => {
-          const hex = board.hexes[hexId];
-          if (!hex) {
-            return null;
-          }
-          const center = layout.hexCenters[hexId]!;
-          const polygon = hexPolygonPoints(hexId, center.x, center.y, 1.08);
-
-          return (
-            <g key={hexId} filter="url(#boardGlow)">
-              <polygon
-                points={polygon}
-                className={`hex-shape ${RESOURCE_CLASS[hex.resourceType]} ${legalHexIds.has(hexId) ? "hex-legal" : ""}`}
-                filter="url(#hexTexture)"
-                onClick={() => {
-                  if (legalHexIds.has(hexId)) {
-                    onHexSelect?.(hexId);
-                  }
-                }}
-              />
-              <circle cx={center.x} cy={center.y} r="0.34" className="token-circle" />
-              <text x={center.x} y={center.y + 0.07} className="token-value">
-                {hex.tokenNumber ?? "D"}
-              </text>
-              <text x={center.x} y={center.y - 0.68} className="hex-label">
-                {resourceLabel(hex.resourceType)}
-              </text>
-              {hex.hasRobber ? (
-                <g>
-                  <circle cx={center.x + 0.64} cy={center.y - 0.64} r="0.24" className="robber-dot" />
-                  <text x={center.x + 0.64} y={center.y - 0.58} className="robber-label">
-                    X
-                  </text>
-                </g>
-              ) : null}
-            </g>
-          );
-        })}
-
-        {Object.values(board.edges).map((edge) => {
-          const a = layout.intersectionPositions[edge.intersectionAId];
-          const b = layout.intersectionPositions[edge.intersectionBId];
-          if (!a || !b) {
-            return null;
-          }
-
-          const owner = edge.road?.ownerPlayerId ? playerLookup.get(edge.road.ownerPlayerId) : undefined;
-          return (
-            <g key={edge.edgeId}>
-              <line
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
-                className={`edge-base ${edge.road ? `road-line ${playerColorToken(owner?.color)}` : "edge-empty"} ${legalEdgeIds.has(edge.edgeId) ? "edge-legal" : ""}`}
-              />
-              {legalEdgeIds.has(edge.edgeId) ? (
-                <line
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  className="edge-hitbox"
-                  onClick={() => onEdgeSelect?.(edge.edgeId)}
-                />
-              ) : null}
-            </g>
-          );
-        })}
-
-        {Object.values(board.intersections).map((intersection) => {
-          const position = layout.intersectionPositions[intersection.intersectionId];
-          if (!position) {
-            return null;
-          }
-          const owner = intersection.building?.ownerPlayerId ? playerLookup.get(intersection.building.ownerPlayerId) : undefined;
-          return (
-            <g key={intersection.intersectionId}>
-              {intersection.building ? (
-                intersection.building.buildingType === "city" ? (
-                  <rect
-                    x={position.x - 0.18}
-                    y={position.y - 0.18}
-                    width="0.36"
-                    height="0.36"
-                    rx="0.08"
-                    className={`building-shape ${playerColorToken(owner?.color)}`}
-                  />
-                ) : (
-                  <polygon
-                    points={settlementPoints(position.x, position.y)}
-                    className={`building-shape ${playerColorToken(owner?.color)}`}
-                  />
-                )
-              ) : (
-                <circle
-                  cx={position.x}
-                  cy={position.y}
-                  r="0.09"
-                  className={`intersection-dot ${legalIntersectionIds.has(intersection.intersectionId) ? "intersection-legal" : ""}`}
-                  onClick={() => {
-                    if (legalIntersectionIds.has(intersection.intersectionId)) {
-                      onIntersectionSelect?.(intersection.intersectionId);
-                    }
-                  }}
-                />
-              )}
-              {legalIntersectionIds.has(intersection.intersectionId) ? (
-                <circle
-                  cx={position.x}
-                  cy={position.y}
-                  r="0.21"
-                  className="intersection-ring"
-                  onClick={() => onIntersectionSelect?.(intersection.intersectionId)}
-                />
-              ) : null}
-            </g>
-          );
-        })}
-      </svg>
+    <div className="board-shell board-stage pixi-board-shell">
+      <div ref={hostRef} className="pixi-board-host" />
+      {!board || !match ? (
+        <div className="board-overlay-message">
+          <p>Kein Brett geladen. Starte ein Match oder synchronisiere den Snapshot.</p>
+        </div>
+      ) : null}
+      {renderError ? (
+        <div className="board-overlay-message board-overlay-message-danger">
+          <p>Board Renderer Fehler: {renderError}</p>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function createBoardLayout(board: GeneratedBoard | undefined) {
-  if (!board) {
-    return {
-      center: { x: 50, y: 50 },
-      bounds: { minX: 0, minY: 0, width: 100, height: 100 },
-      hexCenters: {} as Record<string, BoardUiPoint>,
-      intersectionPositions: {} as Record<string, BoardUiPoint>,
-    };
-  }
-
-  const sourceHexCenters = Object.values(board.hexes).map((hex) => hex.uiCenter);
-  const xs = sourceHexCenters.map((point) => point.x);
-  const ys = sourceHexCenters.map((point) => point.y);
-  const rawCenter = {
-    x: (Math.min(...xs) + Math.max(...xs)) / 2,
-    y: (Math.min(...ys) + Math.max(...ys)) / 2,
-  };
-  const span = {
-    x: Math.max(...xs) - Math.min(...xs),
-    y: Math.max(...ys) - Math.min(...ys),
-  };
-
-  const project = (point: BoardUiPoint) => projectBoardPoint(point, rawCenter, span);
-
-  const hexCenters = Object.fromEntries(
-    Object.entries(board.hexes).map(([hexId, hex]) => [hexId, project(hex.uiCenter)]),
-  ) as Record<string, BoardUiPoint>;
-
-  const intersectionPositions = Object.fromEntries(
-    Object.entries(board.intersections).map(([intersectionId, intersection]) => [intersectionId, project(intersection.uiPosition)]),
-  ) as Record<string, BoardUiPoint>;
-
-  const projectedPoints = [...Object.values(hexCenters), ...Object.values(intersectionPositions)];
-  const padding = 3.1;
-  const minX = Math.min(...projectedPoints.map((point) => point.x)) - padding;
-  const maxX = Math.max(...projectedPoints.map((point) => point.x)) + padding;
-  const minY = Math.min(...projectedPoints.map((point) => point.y)) - padding;
-  const maxY = Math.max(...projectedPoints.map((point) => point.y)) + padding;
-
-  return {
-    center: project(rawCenter),
-    bounds: {
-      minX,
-      minY,
-      width: maxX - minX,
-      height: maxY - minY,
-    },
-    hexCenters,
-    intersectionPositions,
-  };
-}
-
-function projectBoardPoint(point: BoardUiPoint, center: BoardUiPoint, span: BoardUiPoint): BoardUiPoint {
-  const nx = span.x === 0 ? 0 : (point.x - center.x) / span.x;
-  const ny = span.y === 0 ? 0 : (point.y - center.y) / span.y;
-
-  const stretched = {
-    x: (point.x - center.x) * 1.08,
-    y: (point.y - center.y) * 0.94,
-  };
-
-  const drift = {
-    x: Math.sin(ny * Math.PI * 1.2) * 0.48 + nx * ny * 0.9,
-    y: Math.sin(nx * Math.PI * 1.6) * 0.34 - nx * nx * 0.82 + ny * 0.2,
-  };
-
-  const rotated = rotatePoint(
-    {
-      x: center.x + stretched.x + drift.x,
-      y: center.y + stretched.y + drift.y,
-    },
-    center,
-    -7,
-  );
-
-  return rotated;
-}
-
-function rotatePoint(point: BoardUiPoint, center: BoardUiPoint, angleDegrees: number): BoardUiPoint {
-  const radians = (Math.PI / 180) * angleDegrees;
-  const dx = point.x - center.x;
-  const dy = point.y - center.y;
-
-  return {
-    x: center.x + dx * Math.cos(radians) - dy * Math.sin(radians),
-    y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians),
-  };
-}
-
-function positionHarborLabel(a: BoardUiPoint, b: BoardUiPoint, center: BoardUiPoint) {
-  const midpoint = {
-    x: (a.x + b.x) / 2,
-    y: (a.y + b.y) / 2,
-  };
-  const dx = midpoint.x - center.x;
-  const dy = midpoint.y - center.y;
-  const magnitude = Math.max(Math.hypot(dx, dy), 0.001);
-  const push = 0.9;
-
-  return {
-    x: midpoint.x + (dx / magnitude) * push,
-    y: midpoint.y + (dy / magnitude) * push,
-  };
-}
-
-function hexPolygonPoints(hexId: string, centerX: number, centerY: number, radius: number) {
-  const points = [30, 90, 150, 210, 270, 330].map((angle) => {
-    const radians = (Math.PI / 180) * angle;
-    const radiusOffset = radius * (0.96 + hashToUnit(`${hexId}:${angle}`) * 0.1);
-    return `${centerX + Math.cos(radians) * radiusOffset},${centerY + Math.sin(radians) * radiusOffset}`;
-  });
-  return points.join(" ");
-}
-
-function settlementPoints(centerX: number, centerY: number) {
-  return [
-    `${centerX},${centerY - 0.2}`,
-    `${centerX + 0.16},${centerY - 0.04}`,
-    `${centerX + 0.16},${centerY + 0.16}`,
-    `${centerX - 0.16},${centerY + 0.16}`,
-    `${centerX - 0.16},${centerY - 0.04}`,
-  ].join(" ");
+function enableInteraction(
+  graphic: Graphics,
+  onTap: () => void,
+  onHover: () => void,
+  onOut: () => void,
+) {
+  graphic.eventMode = "static";
+  graphic.cursor = "pointer";
+  graphic.on("pointertap", onTap);
+  graphic.on("pointerover", onHover);
+  graphic.on("pointerout", onOut);
 }
 
 function harborLabel(harborType: string) {
@@ -372,15 +346,15 @@ function harborLabel(harborType: string) {
     case "generic_3_to_1":
       return "3:1";
     case "wood_2_to_1":
-      return "Holz 2:1";
+      return "HOLZ";
     case "brick_2_to_1":
-      return "Lehm 2:1";
+      return "LEHM";
     case "sheep_2_to_1":
-      return "Wolle 2:1";
+      return "WOLLE";
     case "wheat_2_to_1":
-      return "Getreide 2:1";
+      return "GETR";
     case "ore_2_to_1":
-      return "Erz 2:1";
+      return "ERZ";
     default:
       return harborType;
   }
@@ -399,16 +373,14 @@ function resourceLabel(resourceType: string) {
     case "ore":
       return "ERZ";
     default:
-      return "DESERT";
+      return "WUESTE";
   }
 }
 
-function hashToUnit(input: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
+function resolveResourceColor(resourceType: string): number {
+  return resourceType in RESOURCE_COLORS ? RESOURCE_COLORS[resourceType]! : RESOURCE_COLORS.desert!;
+}
 
-  return ((hash >>> 0) % 1000) / 1000;
+function resolvePlayerColor(color: string | undefined): number {
+  return color && color in PLAYER_COLORS ? PLAYER_COLORS[color]! : PLAYER_COLORS.neutral!;
 }
