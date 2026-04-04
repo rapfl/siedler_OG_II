@@ -28,13 +28,30 @@ export function readBrowserSession(): BrowserSessionState | undefined {
     return undefined;
   }
 
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return undefined;
-  }
-
   try {
-    return JSON.parse(raw) as BrowserSessionState;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return undefined;
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null) {
+      return undefined;
+    }
+
+    const candidate = parsed as Partial<BrowserSessionState>;
+    if (typeof candidate.sessionId !== "string" || typeof candidate.playerId !== "string" || typeof candidate.displayName !== "string") {
+      return undefined;
+    }
+
+    return {
+      sessionId: candidate.sessionId,
+      playerId: candidate.playerId,
+      displayName: candidate.displayName,
+      ...(typeof candidate.roomCode === "string" ? { roomCode: candidate.roomCode } : {}),
+      ...(typeof candidate.roomId === "string" ? { roomId: candidate.roomId } : {}),
+      ...(typeof candidate.matchId === "string" ? { matchId: candidate.matchId } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -45,7 +62,11 @@ export function writeBrowserSession(session: BrowserSessionState): void {
     return;
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
 }
 
 export function clearBrowserSession(): void {
@@ -53,7 +74,11 @@ export function clearBrowserSession(): void {
     return;
   }
 
-  window.localStorage.removeItem(STORAGE_KEY);
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
 }
 
 export function updateBrowserSession(patch: Partial<BrowserSessionState>): BrowserSessionState | undefined {
