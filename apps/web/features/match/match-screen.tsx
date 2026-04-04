@@ -10,6 +10,12 @@ import { AssetToken } from "../../lib/assets/manifest";
 import { useRealtimeSnapshot } from "../../lib/realtime/use-realtime";
 import { requiredActionPanel, requiredActionSurface, type MatchUtilityPanel } from "../../lib/ui/match-required-action";
 import { createMatchScreenModel, developmentCardEntries, isBoardAction, sumResources } from "../../lib/ui/match-screen-model";
+import {
+  canIncrementResourceSelection,
+  clampResourceSelection,
+  nextResourceSelection,
+  type ResourceEditorConstraints,
+} from "../../lib/ui/resource-editor-state";
 import { resourceEntries, resourceLabel, summarizeLogEntry } from "../../lib/ui/view-model";
 import { useRouteBodyClass } from "../../lib/ui/use-route-body-class";
 import type { MatchCommandType, MatchView, ResourceCounts, ResourceType } from "@siedler/shared-types";
@@ -29,13 +35,6 @@ function emptyResources(): ResourceCounts {
     sheep: 0,
     wheat: 0,
     ore: 0,
-  };
-}
-
-function stepResources(resources: ResourceCounts, type: ResourceType, delta: number): ResourceCounts {
-  return {
-    ...resources,
-    [type]: Math.max(0, resources[type] + delta),
   };
 }
 
@@ -110,10 +109,18 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   }, [activeUtility, model?.requiredAction]);
 
   useEffect(() => {
-    if (!match) {
+    if (!match || model?.requiredAction !== "DISCARD_RESOURCES") {
       setDiscardResources(emptyResources());
+      return;
     }
-  }, [match]);
+
+    setDiscardResources((current) =>
+      clampResourceSelection(current, {
+        maxByResource: match.ownResources ?? emptyResources(),
+        totalCap: match.requiredDiscardCount ?? 0,
+      }),
+    );
+  }, [match, model?.requiredAction, match?.matchVersion, match?.requiredDiscardCount, match?.ownResources]);
 
   if (!match || !model) {
     return (
@@ -137,6 +144,9 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const activeTradeId = match.tradeOffer?.tradeId;
   const acceptedCounterpartyPlayerId = match.tradeOffer?.acceptedPlayerIds[0];
   const forcedSurface = requiredActionSurface(model.requiredAction);
+  const isSetupPhase = match.matchStatus === "match_setup";
+  const actorLabel = isSetupPhase ? "Setup-Spieler" : "Aktiver Spieler";
+  const boardSelectionHint = describeBoardSelection(boardMode, match);
 
   const toggleBuildSelection = (nextMode: BuildMode, nextAction: Extract<MatchCommandType, "BUILD_ROAD" | "BUILD_SETTLEMENT" | "UPGRADE_CITY">) => {
     const shouldClear = buildMode === nextMode && selectedBoardAction === nextAction;
@@ -211,9 +221,9 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                 </p>
               </div>
               <div className="match-stage-badges">
-                <span className="hero-pill">Aktiver Spieler: {model.players.find((player) => player.isActive)?.displayName ?? "n/a"}</span>
-                <span className="hero-pill">Wurf: {match.lastRoll ?? "noch keiner"}</span>
-                <span className="hero-pill">Versteckte VP: {match.ownHiddenPoints ?? 0}</span>
+                <span className="hero-pill">{actorLabel}: {model.currentActorDisplayName ?? "unbekannt"}</span>
+                {!isSetupPhase ? <span className="hero-pill">Wurf: {match.lastRoll ?? "noch keiner"}</span> : null}
+                {!isSetupPhase ? <span className="hero-pill">Versteckte VP: {match.ownHiddenPoints ?? 0}</span> : null}
               </div>
             </div>
 
@@ -224,6 +234,10 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                 discardRemaining={discardRemaining}
                 discardResources={discardResources}
                 onDiscardResourcesChange={setDiscardResources}
+                discardConstraints={{
+                  maxByResource: match.ownResources ?? emptyResources(),
+                  totalCap: match.requiredDiscardCount ?? 0,
+                }}
                 onSubmit={(commandType, payload) => void submit(client, match, commandType, payload)}
               />
             ) : null}
@@ -524,98 +538,121 @@ export function MatchScreen({ matchId }: { matchId: string }) {
               ))}
             </div>
 
-            <div className="match-dock-row">
-              <div className="match-primary-dock">
-                <DockButton
-                  label="Roll"
-                  active={false}
-                  disabled={!(match.allowedActions?.includes("ROLL_DICE") ?? false)}
-                  onClick={() => void submit(client, match, "ROLL_DICE", {})}
-                />
-                <DockButton
-                  label="Build"
-                  active={buildMode !== null || !!boardMode}
-                  disabled={
-                    !(
-                      match.allowedActions?.includes("BUILD_ROAD") ||
-                      match.allowedActions?.includes("BUILD_SETTLEMENT") ||
-                      match.allowedActions?.includes("UPGRADE_CITY") ||
-                      model.requiredAction === "PLACE_INITIAL_SETTLEMENT" ||
-                      model.requiredAction === "PLACE_INITIAL_ROAD"
-                    ) || forcedSurface === "trade" || forcedSurface === "dev" || forcedSurface === "inline"
-                  }
-                  onClick={() => {
-                    setBuildMode((current) => (current ? null : "ROAD"));
-                    setActiveUtility(null);
-                  }}
-                />
-                <DockButton
-                  label="Trade"
-                  active={activeUtility === "trade"}
-                  disabled={forcedSurface === "dev" || forcedSurface === "inline"}
-                  onClick={() => setActiveUtility((current) => (current === "trade" ? null : "trade"))}
-                />
-                <DockButton
-                  label="Dev"
-                  active={activeUtility === "dev"}
-                  disabled={forcedSurface === "trade" || forcedSurface === "inline"}
-                  onClick={() => setActiveUtility((current) => (current === "dev" ? null : "dev"))}
-                />
-                <DockButton
-                  label="End"
-                  active={false}
-                  disabled={!(match.allowedActions?.includes("END_TURN") ?? false) || forcedSurface !== null}
-                  onClick={() => void submit(client, match, "END_TURN", {})}
-                />
-              </div>
-
-              <div className="match-utility-tabs">
-                <UtilityButton label="Log" active={activeUtility === "log"} onClick={() => setActiveUtility((current) => (current === "log" ? null : "log"))} />
-                <UtilityButton label="Tools" active={activeUtility === "tools"} onClick={() => setActiveUtility((current) => (current === "tools" ? null : "tools"))} />
-              </div>
-            </div>
-
-            <div className="match-build-row">
-              {(model.requiredAction === "PLACE_INITIAL_SETTLEMENT" || model.requiredAction === "PLACE_INITIAL_ROAD") ? (
+            {isSetupPhase ? (
+              <div className="match-build-row">
                 <div className="inline-guidance">
-                  <span className="badge status-warning">{model.requiredAction === "PLACE_INITIAL_SETTLEMENT" ? "Setup: Siedlung setzen" : "Setup: Strasse setzen"}</span>
-                  <span className="subtle-copy">Waehle direkt auf dem Brett einen legalen Zielpunkt.</span>
+                  <span className="badge status-warning">
+                    {model.currentActorIsSelf
+                      ? model.requiredAction === "PLACE_INITIAL_ROAD"
+                        ? "Setup: Strasse setzen"
+                        : "Setup: Siedlung setzen"
+                      : `Setup: ${model.currentActorDisplayName ?? "Spieler"} ist dran`}
+                  </span>
+                  <span className="subtle-copy">
+                    {model.currentActorIsSelf
+                      ? "Waehle direkt auf dem Brett einen legalen Zielpunkt."
+                      : "Das Setup bleibt fokussiert auf dem Brett. Deine Match-Aktionen folgen erst nach Abschluss des Setups."}
+                  </span>
                 </div>
-              ) : (
-                <>
-                  <DockButton
-                    label="Road"
-                    active={buildMode === "ROAD" || boardMode === "BUILD_ROAD"}
-                    disabled={!(match.allowedActions?.includes("BUILD_ROAD") ?? false)}
-                    onClick={() => {
-                      toggleBuildSelection("ROAD", "BUILD_ROAD");
-                    }}
-                  />
-                  <DockButton
-                    label="Settlement"
-                    active={buildMode === "SETTLEMENT" || boardMode === "BUILD_SETTLEMENT"}
-                    disabled={!(match.allowedActions?.includes("BUILD_SETTLEMENT") ?? false)}
-                    onClick={() => {
-                      toggleBuildSelection("SETTLEMENT", "BUILD_SETTLEMENT");
-                    }}
-                  />
-                  <DockButton
-                    label="City"
-                    active={buildMode === "CITY" || boardMode === "UPGRADE_CITY"}
-                    disabled={!(match.allowedActions?.includes("UPGRADE_CITY") ?? false)}
-                    onClick={() => {
-                      toggleBuildSelection("CITY", "UPGRADE_CITY");
-                    }}
-                  />
-                  <div className="inline-guidance">
-                    <span className="badge status-muted">
-                      Holz {model.tradeRatios.wood}:1 · Lehm {model.tradeRatios.brick}:1 · Wolle {model.tradeRatios.sheep}:1
-                    </span>
-                    {boardMode ? <span className="subtle-copy">Board Mode: {boardMode}</span> : <span className="subtle-copy">Build waehlen, dann am Brett platzieren.</span>}
+              </div>
+            ) : (
+              <>
+                <div className="match-dock-row">
+                  <div className="match-primary-dock">
+                    <DockButton
+                      label="Roll"
+                      active={false}
+                      disabled={!(match.allowedActions?.includes("ROLL_DICE") ?? false)}
+                      onClick={() => void submit(client, match, "ROLL_DICE", {})}
+                    />
+                    <DockButton
+                      label="Build"
+                      active={buildMode !== null || !!boardMode}
+                      disabled={
+                        !(
+                          match.allowedActions?.includes("BUILD_ROAD") ||
+                          match.allowedActions?.includes("BUILD_SETTLEMENT") ||
+                          match.allowedActions?.includes("UPGRADE_CITY") ||
+                          model.requiredAction === "PLACE_INITIAL_SETTLEMENT" ||
+                          model.requiredAction === "PLACE_INITIAL_ROAD"
+                        ) || forcedSurface === "trade" || forcedSurface === "dev" || forcedSurface === "inline"
+                      }
+                      onClick={() => {
+                        setBuildMode((current) => (current ? null : "ROAD"));
+                        setActiveUtility(null);
+                      }}
+                    />
+                    <DockButton
+                      label="Trade"
+                      active={activeUtility === "trade"}
+                      disabled={forcedSurface === "dev" || forcedSurface === "inline"}
+                      onClick={() => setActiveUtility((current) => (current === "trade" ? null : "trade"))}
+                    />
+                    <DockButton
+                      label="Dev"
+                      active={activeUtility === "dev"}
+                      disabled={forcedSurface === "trade" || forcedSurface === "inline"}
+                      onClick={() => setActiveUtility((current) => (current === "dev" ? null : "dev"))}
+                    />
+                    <DockButton
+                      label="End"
+                      active={false}
+                      disabled={!(match.allowedActions?.includes("END_TURN") ?? false) || forcedSurface !== null}
+                      onClick={() => void submit(client, match, "END_TURN", {})}
+                    />
                   </div>
-                </>
-              )}
-            </div>
+
+                  <div className="match-utility-tabs">
+                    <UtilityButton label="Log" active={activeUtility === "log"} onClick={() => setActiveUtility((current) => (current === "log" ? null : "log"))} />
+                    <UtilityButton label="Tools" active={activeUtility === "tools"} onClick={() => setActiveUtility((current) => (current === "tools" ? null : "tools"))} />
+                  </div>
+                </div>
+
+                <div className="match-build-row">
+                  {(model.requiredAction === "PLACE_INITIAL_SETTLEMENT" || model.requiredAction === "PLACE_INITIAL_ROAD") ? (
+                    <div className="inline-guidance">
+                      <span className="badge status-warning">{model.requiredAction === "PLACE_INITIAL_SETTLEMENT" ? "Setup: Siedlung setzen" : "Setup: Strasse setzen"}</span>
+                      <span className="subtle-copy">Waehle direkt auf dem Brett einen legalen Zielpunkt.</span>
+                    </div>
+                  ) : (
+                    <>
+                      <DockButton
+                        label="Road"
+                        active={buildMode === "ROAD" || boardMode === "BUILD_ROAD"}
+                        disabled={!(match.allowedActions?.includes("BUILD_ROAD") ?? false)}
+                        onClick={() => {
+                          toggleBuildSelection("ROAD", "BUILD_ROAD");
+                        }}
+                      />
+                      <DockButton
+                        label="Settlement"
+                        active={buildMode === "SETTLEMENT" || boardMode === "BUILD_SETTLEMENT"}
+                        disabled={!(match.allowedActions?.includes("BUILD_SETTLEMENT") ?? false)}
+                        onClick={() => {
+                          toggleBuildSelection("SETTLEMENT", "BUILD_SETTLEMENT");
+                        }}
+                      />
+                      <DockButton
+                        label="City"
+                        active={buildMode === "CITY" || boardMode === "UPGRADE_CITY"}
+                        disabled={!(match.allowedActions?.includes("UPGRADE_CITY") ?? false)}
+                        onClick={() => {
+                          toggleBuildSelection("CITY", "UPGRADE_CITY");
+                        }}
+                      />
+                      <div className="inline-guidance">
+                        <span className="badge status-muted">
+                          Holz {model.tradeRatios.wood}:1 · Lehm {model.tradeRatios.brick}:1 · Wolle {model.tradeRatios.sheep}:1
+                        </span>
+                        <span className="subtle-copy">
+                          {boardSelectionHint ?? "Build waehlen, dann am Brett platzieren."}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
 
           </section>
         </div>
@@ -648,6 +685,7 @@ function ForcedActionStrip({
   discardRemaining,
   discardResources,
   onDiscardResourcesChange,
+  discardConstraints,
   onSubmit,
 }: {
   match: MatchView;
@@ -655,6 +693,7 @@ function ForcedActionStrip({
   discardRemaining: number;
   discardResources: ResourceCounts;
   onDiscardResourcesChange: (next: ResourceCounts) => void;
+  discardConstraints: ResourceEditorConstraints;
   onSubmit: (commandType: MatchCommandType, payload: Record<string, unknown>) => void;
 }) {
   if (!model) {
@@ -756,7 +795,7 @@ function ForcedActionStrip({
           </div>
           <span className={`badge ${discardRemaining === 0 ? "status-success" : "status-warning"}`}>Rest: {discardRemaining}</span>
         </div>
-        <ResourceEditor resources={discardResources} onChange={onDiscardResourcesChange} />
+        <ResourceEditor resources={discardResources} constraints={discardConstraints} onChange={onDiscardResourcesChange} />
         <button
           className="action-button danger-button"
           disabled={discardRemaining !== 0}
@@ -791,10 +830,12 @@ function ResourceEditor({
   title,
   resources,
   onChange,
+  constraints,
 }: {
   title?: string;
   resources: ResourceCounts;
   onChange: (next: ResourceCounts) => void;
+  constraints?: ResourceEditorConstraints;
 }) {
   return (
     <div className="resource-editor">
@@ -804,11 +845,19 @@ function ResourceEditor({
           <div key={resource.type} className="editor-row">
             <span>{resource.label}</span>
             <div className="editor-controls">
-              <button className="step-button" onClick={() => onChange(stepResources(resources, resource.type, -1))}>
+              <button
+                className="step-button"
+                disabled={resources[resource.type] === 0}
+                onClick={() => onChange(nextResourceSelection(resources, resource.type, -1, constraints))}
+              >
                 -
               </button>
               <span className="step-value">{resource.count}</span>
-              <button className="step-button" onClick={() => onChange(stepResources(resources, resource.type, 1))}>
+              <button
+                className="step-button"
+                disabled={!canIncrementResourceSelection(resources, resource.type, constraints)}
+                onClick={() => onChange(nextResourceSelection(resources, resource.type, 1, constraints))}
+              >
                 +
               </button>
             </div>
@@ -826,4 +875,17 @@ function resourceSummary(resources: ResourceCounts) {
   }
 
   return entries.map((entry) => `${entry.label} x${entry.count}`).join(", ");
+}
+
+function describeBoardSelection(mode: MatchCommandType | undefined, match: MatchView): string | undefined {
+  switch (mode) {
+    case "BUILD_ROAD":
+      return `${match.legalRoadEdgeIds?.length ?? 0} legale Strassen sind am Brett hervorgehoben.`;
+    case "BUILD_SETTLEMENT":
+      return `${match.legalSettlementIntersectionIds?.length ?? 0} legale Baupunkte stehen fuer eine Siedlung bereit.`;
+    case "UPGRADE_CITY":
+      return `${match.legalCityIntersectionIds?.length ?? 0} eigene Siedlungen koennen zur Stadt ausgebaut werden.`;
+    default:
+      return undefined;
+  }
 }

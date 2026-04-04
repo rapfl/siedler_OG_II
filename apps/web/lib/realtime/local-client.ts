@@ -10,9 +10,9 @@ import type {
 } from "@siedler/shared-types";
 import { createBrowserSession, readBrowserSession, type BrowserSessionState, writeBrowserSession } from "../session/storage";
 import { deriveBrowserSessionFromState, reduceAuthoritativeSessionState } from "./session-state";
+import { isSandboxEnabledForRuntime } from "./sandbox-mode";
 
 type Listener = () => void;
-const sandboxEnabled = process.env.NODE_ENV !== "production";
 
 export interface MatchSnapshotState {
   room?: RoomView;
@@ -82,6 +82,14 @@ let pollHandle: number | undefined;
 const EMPTY_SNAPSHOT: MatchSnapshotState = {
   eventLog: [],
 };
+
+function sandboxEnabled(): boolean {
+  return isSandboxEnabledForRuntime({
+    ...(process.env.NODE_ENV ? { nodeEnv: process.env.NODE_ENV } : {}),
+    ...(process.env.NEXT_PUBLIC_ENABLE_SANDBOX_TOOLS ? { forceEnable: process.env.NEXT_PUBLIC_ENABLE_SANDBOX_TOOLS } : {}),
+    ...(typeof window !== "undefined" ? { hostname: window.location.hostname } : {}),
+  });
+}
 
 function emitRoom() {
   for (const listener of roomListeners) {
@@ -569,7 +577,7 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   async fillRoomWithMockPlayers(targetPlayers: 3 | 4): Promise<MatchSnapshotState> {
-    if (!sandboxEnabled) {
+    if (!sandboxEnabled()) {
       return this.getSnapshot();
     }
     const browserSession = readBrowserSession();
@@ -614,7 +622,7 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   getSandboxIdentities(): Array<MockSeatIdentity & { isCurrent: boolean }> {
-    if (!sandboxEnabled) {
+    if (!sandboxEnabled()) {
       return [];
     }
 
@@ -635,7 +643,7 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   async switchSandboxIdentity(sessionId: string): Promise<MatchSnapshotState> {
-    if (!sandboxEnabled) {
+    if (!sandboxEnabled()) {
       return this.getSnapshot();
     }
 
@@ -668,7 +676,7 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   async advanceSandbox(): Promise<MatchSnapshotState> {
-    if (!sandboxEnabled) {
+    if (!sandboxEnabled()) {
       return this.getSnapshot();
     }
     const browserSession = readBrowserSession();
@@ -682,7 +690,7 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   supportsSandboxTools(): boolean {
-    return sandboxEnabled;
+    return sandboxEnabled();
   }
 }
 

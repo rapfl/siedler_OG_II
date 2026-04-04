@@ -23,6 +23,9 @@ export interface MatchScreenModel {
   roomBadgeLabel: string;
   roomBadgeTone: "success" | "warning" | "danger" | "muted";
   phaseLabel: string;
+  currentActorId?: string | undefined;
+  currentActorDisplayName?: string | undefined;
+  currentActorIsSelf: boolean;
   boardMode?: MatchCommandType | undefined;
   requiredAction?: MatchCommandType | undefined;
   primaryAction: string;
@@ -60,6 +63,7 @@ export function createMatchScreenModel(
     const roomPlayer = playerLookup.get(player.playerId);
     return {
       ...player,
+      isActive: player.isActive || player.playerId === deriveCurrentActorId(match),
       displayName: roomPlayer?.displayName ?? player.playerId,
       color: roomPlayer?.color,
       presence: roomPlayer?.presence,
@@ -69,28 +73,71 @@ export function createMatchScreenModel(
   const selfPlayer = players.find((player) => player.isSelf);
   const roomBadge = room ? roomStatusBadge(room) : { label: "Match", tone: "muted" as const };
   const requiredAction = match.requiredAction;
+  const currentActorId = deriveCurrentActorId(match);
+  const currentActorDisplayName = players.find((player) => player.playerId === currentActorId)?.displayName ?? currentActorId;
   const boardMode = BOARD_ACTIONS.has(requiredAction as MatchCommandType)
     ? requiredAction
     : selectedBoardAction && match.allowedActions?.includes(selectedBoardAction)
       ? selectedBoardAction
       : undefined;
 
+  const primaryCopy = derivePrimaryCopy(match, currentActorId, currentActorDisplayName);
+
   return {
     roomCode: room?.roomCode,
     roomBadgeLabel: roomBadge.label,
     roomBadgeTone: roomBadge.tone,
     phaseLabel: matchPhaseLabel(match),
+    currentActorId,
+    currentActorDisplayName,
+    currentActorIsSelf: currentActorId === match.playerId,
     boardMode,
     requiredAction,
-    primaryAction: match.actionContext?.title ?? (match.activePlayerId === match.playerId ? "Du bist am Zug" : "Warten"),
-    primaryDescription:
+    primaryAction: primaryCopy.title,
+    primaryDescription: primaryCopy.description,
+    players,
+    selfPlayer,
+    tradeRatios: bestTradeRatioByResource(snapshot.board, match.playerId),
+  };
+}
+
+function deriveCurrentActorId(match: MatchView): string | undefined {
+  return match.matchStatus === "match_setup" ? match.currentSetupPlayerId : match.activePlayerId;
+}
+
+function derivePrimaryCopy(
+  match: MatchView,
+  currentActorId: string | undefined,
+  currentActorDisplayName: string | undefined,
+): { title: string; description: string } {
+  if (match.matchStatus === "match_setup" && currentActorId) {
+    if (currentActorId === match.playerId) {
+      return {
+        title: match.actionContext?.title ?? "Setup-Zug",
+        description:
+          match.actionContext?.description ??
+          "Du bist im Setup dran. Waehle direkt auf dem Brett deinen naechsten legalen Zielpunkt.",
+      };
+    }
+
+    const setupTask =
+      match.setupStep === "setup_forward_road" || match.setupStep === "setup_reverse_road"
+        ? "setzt gerade eine Start-Strasse."
+        : "setzt gerade eine Start-Siedlung.";
+
+    return {
+      title: `${currentActorDisplayName ?? "Ein Spieler"} ist im Setup dran`,
+      description: `${currentActorDisplayName ?? "Der aktuelle Spieler"} ${setupTask} Du bist gleich wieder dran, sobald die Snake-Order weitergeht.`,
+    };
+  }
+
+  return {
+    title: match.actionContext?.title ?? (match.activePlayerId === match.playerId ? "Du bist am Zug" : "Warten"),
+    description:
       match.actionContext?.description ??
       (match.activePlayerId === match.playerId
         ? "Nutze die untere Dock-Leiste fuer Aktion, Build und Karten. Das Brett bleibt immer sichtbar."
         : "Verfolge das Brett. Relevante Nebeninfos liegen im Drawer."),
-    players,
-    selfPlayer,
-    tradeRatios: bestTradeRatioByResource(snapshot.board, match.playerId),
   };
 }
 

@@ -48,6 +48,7 @@ export interface BoardPresentation {
 }
 
 const BOARD_PADDING = 52;
+const HEX_CORNER_ANGLES = [30, 90, 150, 210, 270, 330] as const;
 
 export function createBoardPresentation(
   board: GeneratedBoard,
@@ -55,6 +56,10 @@ export function createBoardPresentation(
   height: number,
   playerColors: Map<string, PlayerColor | undefined>,
 ): BoardPresentation {
+  const sourceHexPolygons = Object.fromEntries(
+    Object.entries(board.hexes).map(([hexId, hex]) => [hexId, createSourceHexPolygon(hexId, hex.uiCenter)]),
+  ) as Record<string, BoardUiPoint[]>;
+
   const sourceHexCenters = Object.values(board.hexes).map((hex) => hex.uiCenter);
   const xs = sourceHexCenters.map((point) => point.x);
   const ys = sourceHexCenters.map((point) => point.y);
@@ -80,7 +85,11 @@ export function createBoardPresentation(
     ]),
   ) as Record<string, BoardUiPoint>;
 
-  const abstractPoints = [...Object.values(abstractHexCenters), ...Object.values(abstractIntersections)];
+  const abstractHexPolygons = Object.fromEntries(
+    Object.entries(sourceHexPolygons).map(([hexId, polygon]) => [hexId, polygon.map(abstractProject)]),
+  ) as Record<string, BoardUiPoint[]>;
+
+  const abstractPoints = [...Object.values(abstractIntersections), ...Object.values(abstractHexPolygons).flat()];
   const minX = Math.min(...abstractPoints.map((point) => point.x));
   const maxX = Math.max(...abstractPoints.map((point) => point.x));
   const minY = Math.min(...abstractPoints.map((point) => point.y));
@@ -105,6 +114,10 @@ export function createBoardPresentation(
     Object.entries(abstractIntersections).map(([intersectionId, point]) => [intersectionId, project(point)]),
   ) as Record<string, BoardUiPoint>;
 
+  const screenHexPolygons = Object.fromEntries(
+    Object.entries(abstractHexPolygons).map(([hexId, polygon]) => [hexId, polygon.map(project)]),
+  ) as Record<string, BoardUiPoint[]>;
+
   const center = project(abstractProject(rawCenter));
 
   return {
@@ -120,7 +133,7 @@ export function createBoardPresentation(
         tokenNumber: hex.tokenNumber,
         hasRobber: hex.hasRobber,
         center: centerPoint,
-        polygon: createHexPolygon(hexId, centerPoint, 60 * scale),
+        polygon: screenHexPolygons[hexId]!,
       };
     }),
     intersections: Object.values(board.intersections).map((intersection) => ({
@@ -154,13 +167,13 @@ export function createBoardPresentation(
   };
 }
 
-function createHexPolygon(hexId: string, center: BoardUiPoint, radius: number) {
-  return [30, 90, 150, 210, 270, 330].map((angle) => {
+function createSourceHexPolygon(hexId: string, sourceCenter: BoardUiPoint) {
+  return HEX_CORNER_ANGLES.map((angle) => {
     const radians = (Math.PI / 180) * angle;
-    const radiusOffset = radius * (0.96 + hashToUnit(`${hexId}:${angle}`) * 0.08);
+    const radius = 0.96 + hashToUnit(`${hexId}:${angle}`) * 0.08;
     return {
-      x: center.x + Math.cos(radians) * radiusOffset,
-      y: center.y + Math.sin(radians) * radiusOffset,
+      x: sourceCenter.x + Math.cos(radians) * radius,
+      y: sourceCenter.y + Math.sin(radians) * radius,
     };
   });
 }
