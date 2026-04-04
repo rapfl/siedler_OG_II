@@ -1,10 +1,13 @@
-import { Pool, neonConfig } from "@neondatabase/serverless";
+import { neon } from "@neondatabase/serverless";
 import { InMemoryRealtimeService, type InMemoryRealtimeServiceState } from "@siedler/realtime";
-import { WebSocket } from "ws";
 
 const STATE_KEY = "singleton";
+const MAX_MUTATION_RETRIES = 8;
 
-neonConfig.webSocketConstructor = WebSocket;
+interface StoredRealtimeStateRow {
+  payload: InMemoryRealtimeServiceState;
+  version: number;
+}
 
 function databaseUrl(): string {
   const value = process.env.DATABASE_URL;
@@ -14,46 +17,33 @@ function databaseUrl(): string {
   return value;
 }
 
-interface StoredRealtimeStateRow {
-  payload: InMemoryRealtimeServiceState;
-  version: number;
+function createSql() {
+  return neon(databaseUrl());
 }
 
-interface DatabaseSession {
-  query: Pool["query"];
+function createSqlFullResults() {
+  return neon(databaseUrl(), { fullResults: true });
 }
 
-async function withDatabaseClient<T>(operation: (client: Pool) => Promise<T>): Promise<T> {
-  const pool = new Pool({ connectionString: databaseUrl() });
-  try {
-    return await operation(pool);
-  } finally {
-    await pool.end();
-  }
-}
+async function ensureRealtimeSchemaInternal() {
+  const sql = createSql();
+  const emptyState = new InMemoryRealtimeService().exportState();
 
-async function ensureRealtimeSchemaOn(session: DatabaseSession): Promise<void> {
-  await session.query(`
+  await sql`
     CREATE TABLE IF NOT EXISTS realtime_state (
       state_key TEXT PRIMARY KEY,
       payload JSONB NOT NULL,
       version BIGINT NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
-  `);
-  await session.query(`
+  `;
+
+  await sql`
     ALTER TABLE realtime_state
     ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0
-  `);
-}
+  `;
 
-export async function ensureRealtimeSchema(): Promise<void> {
-  await withDatabaseClient((pool) => ensureRealtimeSchemaOn(pool));
-}
-
-async function ensureStateRow(session: DatabaseSession): Promise<void> {
-  const emptyState = new InMemoryRealtimeService().exportState();
-  await session.query(
+  await sql(
     `
       INSERT INTO realtime_state (state_key, payload, version, updated_at)
       VALUES ($1, $2::jsonb, 0, NOW())
@@ -63,77 +53,81 @@ async function ensureStateRow(session: DatabaseSession): Promise<void> {
   );
 }
 
-async function readRealtimeState(session: DatabaseSession, lockRow: boolean): Promise<StoredRealtimeStateRow> {
-  await ensureRealtimeSchemaOn(session);
-  await ensureStateRow(session);
-  const result = await session.query<StoredRealtimeStateRow>(
+async function readRealtimeStateRow(): Promise<StoredRealtimeStateRow> {
+  await ensureRealtimeSchemaInternal();
+  const sql = createSql();
+  const rows = (await sql(
     `
       SELECT payload, version
       FROM realtime_state
       WHERE state_key = $1
-      ${lockRow ? "FOR UPDATE" : ""}
+      LIMIT 1
     `,
     [STATE_KEY],
-  );
+  )) as Array<{ payload: InMemoryRealtimeServiceState; version: number }>;
 
-  return result.rows[0] ?? {
+  const row = rows[0];
+  if (row) {
+    return {
+      payload: row.payload,
+      version: Number(row.version),
+    };
+  }
+
+  return {
     payload: new InMemoryRealtimeService().exportState(),
     version: 0,
   };
 }
 
-export async function loadRealtimeService(): Promise<InMemoryRealtimeService> {
-  const row = await withDatabaseClient((pool) => readRealtimeState(pool, false));
+export async function ensureRealtimeSchema(): Promise<void> {
+  await ensureRealtimeSchemaInternal();
+}
 
+export async function loadRealtimeService(): Promise<InMemoryRealtimeService> {
+  const row = await readRealtimeStateRow();
   const service = new InMemoryRealtimeService();
   service.importState(row.payload);
-
   return service;
 }
 
 export async function mutateRealtimeState<T>(mutator: (service: InMemoryRealtimeService) => T | Promise<T>): Promise<T> {
-  return withDatabaseClient(async (pool) => {
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await ensureRealtimeSchemaOn(client);
-      await ensureStateRow(client);
-      const row = await readRealtimeState(client, true);
+  await ensureRealtimeSchemaInternal();
 
-      const service = new InMemoryRealtimeService();
-      service.importState(row.payload);
+  for (let attempt = 0; attempt < MAX_MUTATION_RETRIES; attempt += 1) {
+    const current = await readRealtimeStateRow();
+    const service = new InMemoryRealtimeService();
+    service.importState(current.payload);
 
-      const result = await mutator(service);
+    const result = await mutator(service);
+    const nextPayload = JSON.stringify(service.exportState());
+    const sqlFull = createSqlFullResults();
+    const update = await sqlFull(
+      `
+        UPDATE realtime_state
+        SET payload = $2::jsonb,
+            version = version + 1,
+            updated_at = NOW()
+        WHERE state_key = $1
+          AND version = $3
+      `,
+      [STATE_KEY, nextPayload, current.version],
+    );
 
-      await client.query(
-        `
-          UPDATE realtime_state
-          SET payload = $2::jsonb,
-              version = version + 1,
-              updated_at = NOW()
-          WHERE state_key = $1
-        `,
-        [STATE_KEY, JSON.stringify(service.exportState())],
-      );
-
-      await client.query("COMMIT");
+    if (update.rowCount === 1) {
       return result;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
     }
-  });
+  }
+
+  throw new Error("Unable to persist realtime state after repeated concurrent update retries.");
 }
 
 export async function checkDatabaseHealth() {
-  return withDatabaseClient(async (pool) => {
-    await ensureRealtimeSchemaOn(pool);
-    const result = await pool.query<{ now: string }>("SELECT NOW()::text AS now");
-    return {
-      database: "ok" as const,
-      checkedAt: result.rows[0]?.now ?? new Date().toISOString(),
-    };
-  });
+  await ensureRealtimeSchemaInternal();
+  const sql = createSql();
+  const rows = (await sql`SELECT NOW()::text AS now`) as Array<{ now: string }>;
+  return {
+    database: "ok" as const,
+    checkedAt: rows[0]?.now ?? new Date().toISOString(),
+  };
 }
