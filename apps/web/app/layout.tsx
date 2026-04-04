@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
-import { Barlow, Bebas_Neue } from "next/font/google";
+import { Noto_Serif, Work_Sans } from "next/font/google";
 import type { ReactNode } from "react";
 
 import "./globals.css";
 
-const displayFont = Bebas_Neue({
+const chronicleDisplayFont = Noto_Serif({
   subsets: ["latin"],
-  weight: ["400"],
-  variable: "--font-display",
+  weight: ["400", "700"],
+  variable: "--font-chronicle-display",
 });
 
-const bodyFont = Barlow({
+const chronicleBodyFont = Work_Sans({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-body",
+  variable: "--font-chronicle-body",
 });
 
 export const metadata: Metadata = {
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="de" className={`${displayFont.variable} ${bodyFont.variable}`}>
+    <html lang="de" className={`${chronicleDisplayFont.variable} ${chronicleBodyFont.variable}`}>
       <body>{children}</body>
     </html>
   );

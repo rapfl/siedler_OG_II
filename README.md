@@ -42,5 +42,5 @@ Eine browserbasierte Multiplayer-Webapp für private Runden mit Friends:
 
 ## Autonome Codex-Loops
 - `npm run codex:loop` führt die Repo-Gates aus, wählt den nächsten bearbeitbaren Queue-Eintrag und schreibt einen Report nach `ops/runs/latest.md`.
-- Die operative Arbeitslogik liegt in `AGENTS.md`.
+- Die operative Beschreibung des Loops liegt in `docs/07-operations/autonomous-delivery-loop.md`.
 - Der maschinenlesbare Arbeitsvorrat liegt in `ops/work-queue.json`.

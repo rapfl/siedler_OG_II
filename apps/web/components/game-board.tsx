@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createBoardPresentation } from "../lib/ui/board-presentation";
 import { getBoardHoverLabel } from "../lib/ui/board-hover-label";
 import { buildPlayerLookup } from "../lib/ui/view-model";
-import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
+import { Application, Circle, Container, Graphics, Text, TextStyle } from "pixi.js";
 import type { GeneratedBoard, MatchCommandType, MatchView, RoomView } from "@siedler/shared-types";
 
 interface GameBoardProps {
@@ -20,44 +20,48 @@ interface GameBoardProps {
 }
 
 const RESOURCE_COLORS: Record<string, number> = {
-  wood: 0x2d8f56,
-  brick: 0xa64c43,
-  sheep: 0x88c97e,
-  wheat: 0xd8a63f,
-  ore: 0x6d77bb,
-  desert: 0xc39b63,
+  wood: 0x355b2f,
+  brick: 0x7a332d,
+  sheep: 0xa9c690,
+  wheat: 0xd8b448,
+  ore: 0x8f948b,
+  desert: 0xb0a489,
 };
 
 const PLAYER_COLORS: Record<string, number> = {
-  red: 0xd90368,
-  blue: 0x3b82f6,
-  white: 0xe3dfff,
-  orange: 0xfb8b24,
-  neutral: 0xb9a9d6,
+  red: 0xb85b53,
+  blue: 0x5b7484,
+  white: 0xe5ded4,
+  orange: 0xd19a42,
+  neutral: 0x9a9389,
 };
 
 const harborStyle = new TextStyle({
-  fill: 0xf8e9d7,
+  fill: 0xe9d7bc,
+  fontFamily: "Noto Serif",
   fontSize: 11,
   fontWeight: "700",
   letterSpacing: 1.2,
 });
 
 const tokenStyle = new TextStyle({
-  fill: 0x23140d,
+  fill: 0x2a2117,
+  fontFamily: "Work Sans",
   fontSize: 18,
   fontWeight: "700",
 });
 
 const resourceStyle = new TextStyle({
-  fill: 0xfff7eb,
+  fill: 0xf2e7d6,
+  fontFamily: "Work Sans",
   fontSize: 10,
   fontWeight: "700",
   letterSpacing: 1.4,
 });
 
 const tokenHotStyle = new TextStyle({
-  fill: 0xa11b2e,
+  fill: 0x8d3429,
+  fontFamily: "Work Sans",
   fontSize: 18,
   fontWeight: "800",
 });
@@ -86,43 +90,58 @@ export function GameBoard({
     }
 
     let disposed = false;
-    const app = new Application();
-    appRef.current = app;
+    let observer: ResizeObserver | undefined;
+    let localApp: Application | null = null;
+    let appInitialized = false;
 
-    const setup = async () => {
-      try {
-        await app.init({
-          resizeTo: host,
-          backgroundAlpha: 0,
-          antialias: true,
-          autoDensity: true,
-        });
+    try {
+      const app = new Application();
+      localApp = app;
 
-        if (disposed) {
-          app.destroy();
-          return;
+      const setup = async () => {
+        try {
+          await app.init({
+            resizeTo: host,
+            backgroundAlpha: 0,
+            antialias: true,
+            autoDensity: true,
+          });
+          appInitialized = true;
+
+          if (disposed) {
+            safeDestroyApplication(app, appInitialized);
+            return;
+          }
+
+          appRef.current = app;
+          host.replaceChildren(app.canvas);
+          renderRef.current();
+        } catch (error) {
+          setRenderError(error instanceof Error ? error.message : "Pixi renderer konnte nicht initialisiert werden.");
+          safeDestroyApplication(app, appInitialized);
         }
+      };
 
-        host.replaceChildren(app.canvas);
-        renderRef.current();
-      } catch (error) {
-        setRenderError(error instanceof Error ? error.message : "Pixi renderer konnte nicht initialisiert werden.");
+      void setup();
+
+      if (typeof ResizeObserver !== "undefined") {
+        observer = new ResizeObserver(() => {
+          renderRef.current();
+        });
+        observer.observe(host);
       }
-    };
-
-    void setup();
-
-    const observer = new ResizeObserver(() => {
-      renderRef.current();
-    });
-    observer.observe(host);
+    } catch (error) {
+      setRenderError(error instanceof Error ? error.message : "Pixi renderer konnte nicht vorbereitet werden.");
+    }
 
     return () => {
       disposed = true;
-      observer.disconnect();
+      observer?.disconnect();
       onHoverTargetChange?.(undefined);
-      app.destroy();
-      appRef.current = null;
+      safeDestroyApplication(localApp, appInitialized);
+      if (appRef.current === localApp) {
+        appRef.current = null;
+      }
     };
   }, [onHoverTargetChange]);
 
@@ -166,12 +185,12 @@ export function GameBoard({
 
       const backdrop = new Graphics();
       backdrop.roundRect(0, 0, width, height, 32);
-      backdrop.fill(0x1b130e);
+      backdrop.fill(0x1c1713);
       root.addChild(backdrop);
 
       const vignette = new Graphics();
       vignette.ellipse(width / 2, height / 2, width * 0.44, height * 0.4);
-      vignette.fill({ color: 0x6b3f18, alpha: 0.12 });
+      vignette.fill({ color: 0x8e6735, alpha: 0.12 });
       root.addChild(vignette);
 
       for (const harbor of presentation.harbors) {
@@ -188,9 +207,9 @@ export function GameBoard({
         shape.poly(hex.polygon.flatMap((point) => [point.x, point.y]));
         shape.fill(resolveResourceColor(hex.resourceType), 0.97);
         shape.stroke({
-          color: legalHexIds.has(hex.hexId) ? 0xfb8b24 : 0xf8e9d7,
-          width: legalHexIds.has(hex.hexId) ? 4 : 2,
-          alpha: legalHexIds.has(hex.hexId) ? 0.95 : 0.16,
+          color: legalHexIds.has(hex.hexId) ? 0xf0cf6f : 0xf0e2cb,
+          width: legalHexIds.has(hex.hexId) ? 5 : 2,
+          alpha: legalHexIds.has(hex.hexId) ? 0.98 : 0.12,
         });
         if (legalHexIds.has(hex.hexId)) {
           enableInteraction(
@@ -206,14 +225,14 @@ export function GameBoard({
         const label = resourceLabel(hex.resourceType);
         const badgeWidth = Math.max(62, label.length * 8 + 18);
         badge.roundRect(hex.center.x - badgeWidth / 2, hex.center.y - 68, badgeWidth, 22, 11);
-        badge.fill({ color: 0x1c1512, alpha: 0.7 });
-        badge.stroke({ color: 0xfff3e1, width: 1, alpha: 0.12 });
+        badge.fill({ color: 0x201913, alpha: 0.72 });
+        badge.stroke({ color: 0xfff3e1, width: 1, alpha: 0.08 });
         root.addChild(badge);
 
         const token = new Graphics();
         token.circle(hex.center.x, hex.center.y + 6, 20);
-        token.fill(0xf6ecd6);
-        token.stroke({ color: 0x5c3116, width: 2, alpha: 0.28 });
+        token.fill(0xf5ebdc);
+        token.stroke({ color: 0x8e6b2a, width: 2, alpha: 0.46 });
         root.addChild(token);
 
         const tokenNumber = hex.tokenNumber;
@@ -238,15 +257,15 @@ export function GameBoard({
           for (let index = 0; index < pips; index += 1) {
             pipRow.circle(startX + index * pipSpacing, hex.center.y + 24, 2.2);
           }
-          pipRow.fill(isHotNumber(tokenNumber) ? 0xb61f35 : 0x4f2a16);
+          pipRow.fill(isHotNumber(tokenNumber) ? 0x8d3429 : 0x5a4630);
           root.addChild(pipRow);
         }
 
         if (hex.hasRobber) {
           const robber = new Graphics();
           robber.circle(hex.center.x + 42, hex.center.y - 34, 14);
-          robber.fill(0x150a13);
-          robber.stroke({ color: 0xfb8b24, width: 2, alpha: 0.7 });
+          robber.fill(0x18120f);
+          robber.stroke({ color: 0xe9c349, width: 2, alpha: 0.72 });
           root.addChild(robber);
         }
       }
@@ -259,9 +278,9 @@ export function GameBoard({
           line.stroke({ color: resolvePlayerColor(edge.ownerColor), width: 8, alpha: 0.96 });
         } else {
           line.stroke({
-            color: legalEdgeIds.has(edge.edgeId) ? 0xfb8b24 : 0xf6e8d0,
-            width: legalEdgeIds.has(edge.edgeId) ? 6 : 3,
-            alpha: legalEdgeIds.has(edge.edgeId) ? 0.92 : 0.13,
+            color: legalEdgeIds.has(edge.edgeId) ? 0xf0cf6f : 0xf1e3cb,
+            width: legalEdgeIds.has(edge.edgeId) ? 8 : 3,
+            alpha: legalEdgeIds.has(edge.edgeId) ? 0.95 : 0.1,
           });
         }
         root.addChild(line);
@@ -308,23 +327,40 @@ export function GameBoard({
         }
 
         const dot = new Graphics();
-        dot.circle(intersection.position.x, intersection.position.y, legalIntersectionIds.has(intersection.intersectionId) ? 8 : 5);
-        dot.fill(legalIntersectionIds.has(intersection.intersectionId) ? 0xfb8b24 : 0xf6e8d0);
-        dot.alpha = legalIntersectionIds.has(intersection.intersectionId) ? 1 : 0.46;
+        dot.circle(intersection.position.x, intersection.position.y, legalIntersectionIds.has(intersection.intersectionId) ? 9 : 5);
+        dot.fill(legalIntersectionIds.has(intersection.intersectionId) ? 0xf0cf6f : 0xf1e3cb);
+        dot.alpha = legalIntersectionIds.has(intersection.intersectionId) ? 1 : 0.42;
         root.addChild(dot);
 
         if (legalIntersectionIds.has(intersection.intersectionId)) {
+          const selectIntersection = () => onIntersectionSelect?.(intersection.intersectionId);
+
+          dot.hitArea = new Circle(intersection.position.x, intersection.position.y, 22);
+          enableInteraction(
+            dot,
+            selectIntersection,
+            () => onHoverTargetChange?.(hoverLabel),
+            () => onHoverTargetChange?.(undefined),
+          );
+
           const ring = new Graphics();
-          ring.circle(intersection.position.x, intersection.position.y, 17);
-          ring.stroke({ color: 0xfb8b24, width: 3, alpha: 0.78 });
+          ring.circle(intersection.position.x, intersection.position.y, 18);
+          ring.stroke({ color: 0xf0cf6f, width: 3, alpha: 0.84 });
+          ring.hitArea = new Circle(intersection.position.x, intersection.position.y, 22);
+          enableInteraction(
+            ring,
+            selectIntersection,
+            () => onHoverTargetChange?.(hoverLabel),
+            () => onHoverTargetChange?.(undefined),
+          );
           root.addChild(ring);
 
           const hit = new Graphics();
           hit.circle(intersection.position.x, intersection.position.y, 22);
-          hit.fill({ color: 0xffffff, alpha: 0.001 });
+          hit.hitArea = new Circle(intersection.position.x, intersection.position.y, 24);
           enableInteraction(
             hit,
-            () => onIntersectionSelect?.(intersection.intersectionId),
+            selectIntersection,
             () => onHoverTargetChange?.(hoverLabel),
             () => onHoverTargetChange?.(undefined),
           );
@@ -365,7 +401,7 @@ function enableInteraction(
 ) {
   graphic.eventMode = "static";
   graphic.cursor = "pointer";
-  graphic.on("pointertap", onTap);
+  graphic.on("pointerdown", onTap);
   graphic.on("pointerover", onHover);
   graphic.on("pointerout", onOut);
 }
@@ -438,4 +474,16 @@ function probabilityPipCount(tokenNumber: number | undefined): number {
 
 function isHotNumber(tokenNumber: number | undefined): boolean {
   return tokenNumber === 6 || tokenNumber === 8;
+}
+
+function safeDestroyApplication(app: Application | null, initialized: boolean) {
+  if (!app || !initialized) {
+    return;
+  }
+
+  try {
+    app.destroy();
+  } catch {
+    // Pixi can throw during teardown when init never completed cleanly.
+  }
 }

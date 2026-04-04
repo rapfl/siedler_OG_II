@@ -5,13 +5,17 @@ export function AppShell({
   title,
   kicker,
   children,
+  brandIcon,
+  headerCenter,
   actions,
   pageClassName,
   contentClassName,
 }: {
   title: string;
-  kicker: string;
+  kicker?: string;
   children: ReactNode;
+  brandIcon?: ReactNode;
+  headerCenter?: ReactNode;
   actions?: ReactNode;
   pageClassName?: string;
   contentClassName?: string;
@@ -21,11 +25,13 @@ export function AppShell({
       <div className="shell-frame">
         <header className="shell-header">
           <div className="shell-brand">
-            <span className="shell-kicker">{kicker}</span>
+            {brandIcon ? <span className="shell-brand-icon">{brandIcon}</span> : null}
+            {kicker ? <span className="shell-kicker">{kicker}</span> : null}
             <Link href="/" className="shell-title">
               {title}
             </Link>
           </div>
+          {headerCenter ? <div className="shell-header-center">{headerCenter}</div> : null}
           {actions}
         </header>
         <div className={["shell-content", contentClassName].filter(Boolean).join(" ")}>{children}</div>
