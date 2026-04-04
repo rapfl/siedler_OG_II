@@ -43,6 +43,22 @@ export type HarborType =
 
 export type BuildingType = "settlement" | "city";
 
+export type DevelopmentCardType =
+  | "knight"
+  | "victory_point"
+  | "year_of_plenty"
+  | "monopoly"
+  | "road_building";
+
+export type DevelopmentCardResolution =
+  | "year_of_plenty_pick_1"
+  | "year_of_plenty_pick_2"
+  | "monopoly_pick_resource"
+  | "road_building_place_1"
+  | "road_building_place_2";
+
+export type TradeResponse = "accept" | "reject";
+
 export type SetupStep =
   | "setup_forward_settlement"
   | "setup_forward_road"
@@ -117,8 +133,11 @@ export interface MatchState {
   setup?: SetupState | undefined;
   turn?: TurnState | undefined;
   rngState?: number | undefined;
+  developmentDeck?: DevelopmentCardType[] | undefined;
   longestRoadHolderPlayerId?: string | undefined;
   longestRoadLength?: number | undefined;
+  largestArmyHolderPlayerId?: string | undefined;
+  largestArmySize?: number | undefined;
   version: number;
 }
 
@@ -191,7 +210,24 @@ export interface MatchPlayerState {
   resources: ResourceCounts;
   initialSettlementIntersectionIds: string[];
   initialRoadEdgeIds: string[];
+  developmentCards?: DevelopmentCardCounts | undefined;
   playedKnightCount?: number | undefined;
+}
+
+export interface DevelopmentCardCounts {
+  knight: number;
+  victory_point: number;
+  year_of_plenty: number;
+  monopoly: number;
+  road_building: number;
+}
+
+export interface TradeOfferState {
+  tradeId: string;
+  offeredByPlayerId: string;
+  offeredResources: ResourceCounts;
+  requestedResources: ResourceCounts;
+  responses: Record<string, TradeResponse>;
 }
 
 export interface SetupState {
@@ -208,9 +244,16 @@ export interface TurnState {
   phase: TurnPhase;
   turnNumber: number;
   lastRoll?: number | undefined;
+  hasPlayedDevCardThisTurn?: boolean | undefined;
+  purchasedDevelopmentCardsThisTurn?: DevelopmentCardCounts | undefined;
+  developmentCardResolution?: DevelopmentCardResolution | undefined;
+  pendingYearOfPlentyResources?: ResourceType[] | undefined;
+  tradeOffer?: TradeOfferState | undefined;
   discardPlayerIds?: string[] | undefined;
   discardResolvedPlayerIds?: string[] | undefined;
   stealablePlayerIds?: string[] | undefined;
+  pendingRobberReason?: "rolled_seven" | "played_knight" | undefined;
+  pendingRobberReturnPhase?: "roll_pending" | "action_phase" | undefined;
 }
 
 export interface RoomPlayerSummary {
@@ -255,6 +298,36 @@ export interface MatchView {
   matchVersion: number;
   playerId: string;
   playerOrder: string[];
+  allowedActions?: MatchCommandType[] | undefined;
+  requiredAction?: MatchCommandType | undefined;
+  setupStep?: SetupStep | undefined;
+  currentSetupPlayerId?: string | undefined;
+  legalSetupPlacements?: string[] | undefined;
+  activePlayerId?: string | undefined;
+  turnPhase?: TurnPhase | undefined;
+  lastRoll?: number | undefined;
+  visiblePointsByPlayerId?: Record<string, number> | undefined;
+  totalPointsForPlayer?: number | undefined;
+  ownResources?: ResourceCounts | undefined;
+  ownDevelopmentCards?: DevelopmentCardCounts | undefined;
+  ownHiddenPoints?: number | undefined;
+  longestRoadHolderPlayerId?: string | undefined;
+  longestRoadLength?: number | undefined;
+  largestArmyHolderPlayerId?: string | undefined;
+  largestArmySize?: number | undefined;
+  requiredDiscardCount?: number | undefined;
+  stealablePlayerIds?: string[] | undefined;
+  tradeOffer?: MatchTradeView | undefined;
+}
+
+export interface MatchTradeView {
+  tradeId: string;
+  offeredByPlayerId: string;
+  offeredResources: ResourceCounts;
+  requestedResources: ResourceCounts;
+  acceptedPlayerIds: string[];
+  rejectedPlayerIds: string[];
+  selfResponse?: TradeResponse | undefined;
 }
 
 export interface PlayerView {
@@ -281,6 +354,40 @@ export interface ClientSubscribeRoomMessage {
 export interface ClientSubscribeMatchMessage {
   type: "client.subscribe_match";
   matchId: string;
+}
+
+export type MatchCommandType =
+  | "PLACE_INITIAL_SETTLEMENT"
+  | "PLACE_INITIAL_ROAD"
+  | "ROLL_DICE"
+  | "END_TURN"
+  | "BUILD_ROAD"
+  | "BUILD_SETTLEMENT"
+  | "UPGRADE_CITY"
+  | "DISCARD_RESOURCES"
+  | "MOVE_ROBBER"
+  | "STEAL_RESOURCE"
+  | "BUY_DEV_CARD"
+  | "PLAY_DEV_CARD_KNIGHT"
+  | "PLAY_DEV_CARD_YEAR_OF_PLENTY"
+  | "PICK_YEAR_OF_PLENTY_RESOURCE"
+  | "PLAY_DEV_CARD_MONOPOLY"
+  | "PICK_MONOPOLY_RESOURCE_TYPE"
+  | "PLAY_DEV_CARD_ROAD_BUILDING"
+  | "OFFER_TRADE"
+  | "RESPOND_TRADE"
+  | "CONFIRM_TRADE"
+  | "CANCEL_TRADE"
+  | "TRADE_WITH_BANK";
+
+export interface ClientSubmitCommandMessage {
+  type: "client.submit_command";
+  commandId: string;
+  roomId: string;
+  matchId?: string | undefined;
+  commandType: MatchCommandType;
+  payload?: Record<string, unknown> | undefined;
+  clientStateVersion?: number | undefined;
 }
 
 export interface SessionAttachedMessage {

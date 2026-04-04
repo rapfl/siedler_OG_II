@@ -4,6 +4,11 @@ import {
   MatchEngineError,
   buildRoad,
   buildSettlement,
+  buyDevelopmentCard,
+  cancelTrade,
+  confirmTrade,
+  calculateLargestArmy,
+  calculateHiddenPoints,
   calculateVisiblePoints,
   createRoom,
   discardResources,
@@ -13,15 +18,24 @@ import {
   initializeMatchSetup,
   joinRoom,
   moveRobber,
+  offerTrade,
+  pickMonopolyResourceType,
+  pickYearOfPlentyResource,
   placeInitialRoad,
   placeInitialSettlement,
+  playKnight,
+  playMonopoly,
+  playRoadBuilding,
+  playYearOfPlenty,
+  respondTrade,
   rollDice,
   stealResource,
   startMatch,
+  tradeWithBank,
   toggleReady,
   upgradeCity,
 } from "../src/index.js";
-import type { MatchState, ResourceCounts } from "../../shared-types/src/index.js";
+import type { DevelopmentCardType, MatchState, ResourceCounts } from "../../shared-types/src/index.js";
 
 const context = {
   now: "2026-04-04T09:30:00.000Z",
@@ -100,6 +114,23 @@ function toActionPhase(match: MatchState, activePlayerId = match.turn?.activePla
       phase: "action_phase",
       lastRoll: 8,
     },
+  };
+}
+
+function withDevelopmentCards(match: MatchState, playerId: string, developmentCards: Partial<Record<DevelopmentCardType, number>>): MatchState {
+  return {
+    ...match,
+    players: match.players?.map((player) =>
+      player.playerId === playerId
+        ? {
+            ...player,
+            developmentCards: {
+              ...player.developmentCards,
+              ...developmentCards,
+            },
+          }
+        : player,
+    ),
   };
 }
 
@@ -206,7 +237,7 @@ describe("turn engine", () => {
     const ended = endTurn(rolled, activePlayerId, { now: "2026-04-04T10:01:00.000Z" });
     expect(ended.turn).toMatchObject({
       activePlayerId: "p2",
-      phase: "roll_pending",
+      phase: "pre_roll_devcard_window",
       turnNumber: 2,
     });
   });
@@ -285,6 +316,547 @@ describe("turn engine", () => {
     });
     expect(stolen.players?.find((player) => player.playerId === "p1")?.resources.wood).toBe(p1WoodBeforeSteal + 1);
     expect(stolen.players?.find((player) => player.playerId === "p2")?.resources.wood).toBe(p2WoodBeforeSteal - 1);
+  });
+
+  it("plays knight before rolling, starts robber flow without discard, and returns to roll pending", () => {
+    const match = withDevelopmentCards(
+      withResources(completeSetup(4), "p2", {
+        wood: 2,
+      }),
+      "p1",
+      { knight: 1 },
+    );
+
+    const primed = {
+      ...match,
+      turn: {
+        ...match.turn!,
+        activePlayerId: "p1",
+        phase: "pre_roll_devcard_window",
+        hasPlayedDevCardThisTurn: false,
+      },
+    };
+
+    const played = playKnight(primed, "p1", {
+      now: "2026-04-04T10:00:00.000Z",
+    });
+
+    expect(played.turn).toMatchObject({
+      phase: "robber_pending",
+      pendingRobberReason: "played_knight",
+      pendingRobberReturnPhase: "roll_pending",
+      hasPlayedDevCardThisTurn: true,
+      discardPlayerIds: undefined,
+    });
+    expect(played.players?.find((player) => player.playerId === "p1")?.playedKnightCount).toBe(1);
+
+    const robberHexId = findRobberTargetForVictim(played, "p1", "p2");
+    const moved = moveRobber(played, "p1", robberHexId);
+    const resolved = stealResource(moved, "p1", "p2", {
+      now: "2026-04-04T10:01:00.000Z",
+      forcedResourceType: "wood",
+    });
+
+    expect(resolved.turn).toMatchObject({
+      phase: "roll_pending",
+      hasPlayedDevCardThisTurn: true,
+      pendingRobberReason: undefined,
+      pendingRobberReturnPhase: undefined,
+    });
+  });
+
+  it("awards largest army at 3 played knights and transfers it only on a higher count", () => {
+    const match = withDevelopmentCards(completeSetup(4), "p2", { knight: 1 });
+    const withKnights = {
+      ...match,
+      players: match.players?.map((player) => {
+        if (player.playerId === "p1") {
+          return {
+            ...player,
+            playedKnightCount: 3,
+          };
+        }
+
+        if (player.playerId === "p2") {
+          return {
+            ...player,
+            playedKnightCount: 3,
+          };
+        }
+
+        return player;
+      }),
+      largestArmyHolderPlayerId: "p1",
+      largestArmySize: 3,
+    };
+
+    expect(calculateLargestArmy(withKnights)).toMatchObject({
+      holderPlayerId: "p1",
+      size: 3,
+    });
+
+    const transferred = playKnight(
+      {
+        ...withKnights,
+        turn: {
+          ...withKnights.turn!,
+          activePlayerId: "p2",
+          phase: "action_phase",
+          hasPlayedDevCardThisTurn: false,
+        },
+      },
+      "p2",
+      {
+        now: "2026-04-04T10:02:00.000Z",
+      },
+    );
+
+    expect(transferred.players?.find((player) => player.playerId === "p2")?.playedKnightCount).toBe(4);
+    expect(transferred.largestArmyHolderPlayerId).toBe("p2");
+    expect(transferred.largestArmySize).toBe(4);
+  });
+
+  it("finishes the match when knight play awards largest army for the tenth visible point", () => {
+    const match = withDevelopmentCards(completeSetup(4), "p1", { knight: 1 });
+    const targetUpgradeId = match.players?.find((player) => player.playerId === "p1")?.initialSettlementIntersectionIds[0]!;
+    const manualBoard = structuredClone(match.board!);
+    const extraIntersectionIds = Object.keys(manualBoard.intersections)
+      .filter((intersectionId) => !manualBoard.intersections[intersectionId]!.building)
+      .slice(0, 3);
+
+    manualBoard.intersections[targetUpgradeId] = {
+      ...manualBoard.intersections[targetUpgradeId]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "city",
+      },
+    };
+    manualBoard.intersections[extraIntersectionIds[0]!] = {
+      ...manualBoard.intersections[extraIntersectionIds[0]!]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "city",
+      },
+    };
+    manualBoard.intersections[extraIntersectionIds[1]!] = {
+      ...manualBoard.intersections[extraIntersectionIds[1]!]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "city",
+      },
+    };
+    manualBoard.intersections[extraIntersectionIds[2]!] = {
+      ...manualBoard.intersections[extraIntersectionIds[2]!]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "settlement",
+      },
+    };
+
+    const primed = {
+      ...match,
+      board: manualBoard,
+      players: match.players?.map((player) =>
+        player.playerId === "p1"
+          ? {
+              ...player,
+              playedKnightCount: 2,
+            }
+          : player,
+      ),
+      turn: {
+        ...match.turn!,
+        activePlayerId: "p1",
+        phase: "action_phase",
+        hasPlayedDevCardThisTurn: false,
+      },
+    };
+
+    expect(calculateVisiblePoints(primed).p1).toBe(8);
+
+    const won = playKnight(primed, "p1", {
+      now: "2026-04-04T10:03:00.000Z",
+    });
+
+    expect(won.status).toBe("match_finished");
+    expect(won.winnerPlayerId).toBe("p1");
+    expect(won.largestArmyHolderPlayerId).toBe("p1");
+    expect(calculateVisiblePoints(won).p1).toBe(10);
+  });
+
+  it("buys a development card, deducts cost, and blocks playing a same-turn knight", () => {
+    const match = {
+      ...toActionPhase(
+        withResources(completeSetup(4), "p1", {
+          sheep: 3,
+          wheat: 3,
+          ore: 3,
+        }),
+      ),
+      developmentDeck: ["knight", "victory_point"],
+    };
+
+    const bought = buyDevelopmentCard(match, "p1");
+
+    expect(bought.players?.find((player) => player.playerId === "p1")?.resources).toMatchObject({
+      sheep: 2,
+      wheat: 2,
+      ore: 2,
+    });
+    expect(bought.players?.find((player) => player.playerId === "p1")?.developmentCards).toMatchObject({
+      knight: 1,
+    });
+    expect(bought.turn?.purchasedDevelopmentCardsThisTurn).toMatchObject({
+      knight: 1,
+    });
+    expect(bought.developmentDeck).toEqual(["victory_point"]);
+
+    expect(() =>
+      playKnight(bought, "p1", {
+        now: "2026-04-04T10:04:00.000Z",
+      }),
+    ).toThrowError(MatchEngineError);
+  });
+
+  it("resolves year of plenty over two picks and returns to action phase", () => {
+    const match = withDevelopmentCards(toActionPhase(completeSetup(4)), "p1", {
+      year_of_plenty: 1,
+    });
+
+    const played = playYearOfPlenty(match, "p1");
+    expect(played.turn).toMatchObject({
+      phase: "devcard_resolution",
+      developmentCardResolution: "year_of_plenty_pick_1",
+      hasPlayedDevCardThisTurn: true,
+    });
+
+    const pickedOne = pickYearOfPlentyResource(played, "p1", "ore");
+    expect(pickedOne.turn).toMatchObject({
+      phase: "devcard_resolution",
+      developmentCardResolution: "year_of_plenty_pick_2",
+      pendingYearOfPlentyResources: ["ore"],
+    });
+
+    const pickedTwo = pickYearOfPlentyResource(pickedOne, "p1", "wheat");
+    expect(pickedTwo.turn).toMatchObject({
+      phase: "action_phase",
+      developmentCardResolution: undefined,
+      pendingYearOfPlentyResources: undefined,
+    });
+    expect(pickedTwo.players?.find((player) => player.playerId === "p1")?.resources).toMatchObject({
+      ore: 1,
+      wheat: 1,
+    });
+  });
+
+  it("resolves monopoly and collects the chosen resource from all opponents", () => {
+    const match = withDevelopmentCards(
+      withResources(
+        withResources(completeSetup(4), "p2", { sheep: 2 }),
+        "p3",
+        { sheep: 1 },
+      ),
+      "p1",
+      { monopoly: 1 },
+    );
+
+    const primed = toActionPhase(match);
+    const p1SheepBefore = primed.players?.find((player) => player.playerId === "p1")?.resources.sheep ?? 0;
+    const opponentSheepBefore = (primed.players ?? [])
+      .filter((player) => player.playerId !== "p1")
+      .reduce((sum, player) => sum + player.resources.sheep, 0);
+    const played = playMonopoly(primed, "p1");
+    const resolved = pickMonopolyResourceType(played, "p1", "sheep");
+
+    expect(resolved.turn).toMatchObject({
+      phase: "action_phase",
+      developmentCardResolution: undefined,
+    });
+    expect(resolved.players?.find((player) => player.playerId === "p1")?.resources.sheep).toBe(
+      p1SheepBefore + opponentSheepBefore,
+    );
+    expect(resolved.players?.find((player) => player.playerId === "p2")?.resources.sheep).toBe(0);
+    expect(resolved.players?.find((player) => player.playerId === "p3")?.resources.sheep).toBe(0);
+  });
+
+  it("resolves road building over two placements and ends early when no second road remains", () => {
+    const match = withDevelopmentCards(completeSetup(4), "p1", {
+      road_building: 1,
+    });
+
+    const played = playRoadBuilding(toActionPhase(match), "p1");
+    expect(played.turn).toMatchObject({
+      phase: "devcard_resolution",
+      developmentCardResolution: "road_building_place_1",
+    });
+
+    const firstEdgeId = findLegalRoadTarget(played, "p1");
+    const builtOne = buildRoad(played, "p1", firstEdgeId, {
+      now: "2026-04-04T10:04:30.000Z",
+    });
+
+    if (builtOne.turn?.phase === "devcard_resolution") {
+      expect(builtOne.turn.developmentCardResolution).toBe("road_building_place_2");
+      const secondEdgeId = findLegalRoadTarget(builtOne, "p1");
+      const builtTwo = buildRoad(builtOne, "p1", secondEdgeId, {
+        now: "2026-04-04T10:04:45.000Z",
+      });
+      expect(builtTwo.turn).toMatchObject({
+        phase: "action_phase",
+        developmentCardResolution: undefined,
+      });
+    } else {
+      expect(builtOne.turn).toMatchObject({
+        phase: "action_phase",
+        developmentCardResolution: undefined,
+      });
+    }
+  });
+
+  it("offers a trade to all, records acceptance, and completes the atomic transfer on confirm", () => {
+    const match = toActionPhase(
+      withResources(
+        withResources(completeSetup(4), "p1", { wood: 1 }),
+        "p2",
+        { brick: 1 },
+      ),
+    );
+
+    const p1Before = match.players?.find((player) => player.playerId === "p1")?.resources!;
+    const p2Before = match.players?.find((player) => player.playerId === "p2")?.resources!;
+
+    const offered = offerTrade(match, "p1", {
+      offeredResources: { wood: 1 },
+      requestedResources: { brick: 1 },
+    });
+    expect(offered.turn?.tradeOffer?.offeredByPlayerId).toBe("p1");
+
+    const accepted = respondTrade(offered, "p2", offered.turn!.tradeOffer!.tradeId, "accept");
+    expect(accepted.turn?.tradeOffer?.responses.p2).toBe("accept");
+
+    const completed = confirmTrade(accepted, "p1", accepted.turn!.tradeOffer!.tradeId, "p2");
+    expect(completed.turn?.tradeOffer).toBeUndefined();
+    expect(completed.players?.find((player) => player.playerId === "p1")?.resources.wood).toBe(p1Before.wood - 1);
+    expect(completed.players?.find((player) => player.playerId === "p1")?.resources.brick).toBe(p1Before.brick + 1);
+    expect(completed.players?.find((player) => player.playerId === "p2")?.resources.wood).toBe(p2Before.wood + 1);
+    expect(completed.players?.find((player) => player.playerId === "p2")?.resources.brick).toBe(p2Before.brick - 1);
+  });
+
+  it("closes a trade automatically when all other players reject", () => {
+    const match = toActionPhase(withResources(completeSetup(4), "p1", { wood: 1 }));
+    const offered = offerTrade(match, "p1", {
+      offeredResources: { wood: 1 },
+      requestedResources: { brick: 1 },
+    });
+
+    const rejectedByP2 = respondTrade(offered, "p2", offered.turn!.tradeOffer!.tradeId, "reject");
+    const rejectedByP3 = respondTrade(rejectedByP2, "p3", offered.turn!.tradeOffer!.tradeId, "reject");
+    const rejectedByP4 = respondTrade(rejectedByP3, "p4", offered.turn!.tradeOffer!.tradeId, "reject");
+
+    expect(rejectedByP4.turn?.tradeOffer).toBeUndefined();
+  });
+
+  it("allows the active player to cancel an open trade", () => {
+    const match = toActionPhase(withResources(completeSetup(4), "p1", { wood: 1 }));
+    const offered = offerTrade(match, "p1", {
+      offeredResources: { wood: 1 },
+      requestedResources: { brick: 1 },
+    });
+
+    const cancelled = cancelTrade(offered, "p1", offered.turn!.tradeOffer!.tradeId);
+    expect(cancelled.turn?.tradeOffer).toBeUndefined();
+  });
+
+  it("fails trade confirmation if the active player spent the offered resources after opening the trade", () => {
+    const match = toActionPhase(
+      withResources(
+        withResources(completeSetup(4), "p1", { wood: 1, brick: 1 }),
+        "p2",
+        { brick: 1 },
+      ),
+    );
+
+    const offered = offerTrade(match, "p1", {
+      offeredResources: { wood: 1 },
+      requestedResources: { brick: 1 },
+    });
+    const accepted = respondTrade(offered, "p2", offered.turn!.tradeOffer!.tradeId, "accept");
+    const spentWood = {
+      ...accepted,
+      players: accepted.players?.map((player) =>
+        player.playerId === "p1"
+          ? {
+              ...player,
+              resources: {
+                ...player.resources,
+                wood: 0,
+              },
+            }
+          : player,
+      ),
+    };
+
+    expect(() =>
+      confirmTrade(spentWood, "p1", accepted.turn!.tradeOffer!.tradeId, "p2"),
+    ).toThrowError(MatchEngineError);
+  });
+
+  it("supports bank and harbor trade ratios and rejects illegal ratios", () => {
+    const match = completeSetup(4);
+    const p1SettlementIds = match.players?.find((player) => player.playerId === "p1")?.initialSettlementIntersectionIds ?? [];
+    const genericHarborIntersectionId = p1SettlementIds.find(
+      (intersectionId) => match.board!.intersections[intersectionId]?.harborAccess === "generic_3_to_1",
+    );
+    const specificHarborIntersectionId = p1SettlementIds.find(
+      (intersectionId) => match.board!.intersections[intersectionId]?.harborAccess === "wood_2_to_1",
+    );
+
+    const base = toActionPhase(withResources(match, "p1", { wood: 6, brick: 4, ore: 0 }));
+    const bankTraded = tradeWithBank(base, "p1", {
+      giveResources: { brick: 4 },
+      receiveResources: { ore: 1 },
+    });
+    expect(bankTraded.players?.find((player) => player.playerId === "p1")?.resources).toMatchObject({
+      brick: 0,
+      ore: 1,
+    });
+
+    if (genericHarborIntersectionId) {
+      const genericHarborMatch = toActionPhase(
+        withResources(
+          {
+            ...match,
+            board: {
+              ...match.board!,
+              intersections: {
+                ...match.board!.intersections,
+                [genericHarborIntersectionId]: {
+                  ...match.board!.intersections[genericHarborIntersectionId]!,
+                  building: {
+                    ownerPlayerId: "p1",
+                    buildingType: "settlement",
+                  },
+                },
+              },
+            },
+          },
+          "p1",
+          { wood: 3, ore: 0 },
+        ),
+      );
+
+      const traded = tradeWithBank(genericHarborMatch, "p1", {
+        giveResources: { wood: 3 },
+        receiveResources: { ore: 1 },
+      });
+      expect(traded.players?.find((player) => player.playerId === "p1")?.resources).toMatchObject({
+        wood: 0,
+        ore: 1,
+      });
+    }
+
+    if (specificHarborIntersectionId) {
+      const specificHarborMatch = toActionPhase(
+        withResources(
+          {
+            ...match,
+            board: {
+              ...match.board!,
+              intersections: {
+                ...match.board!.intersections,
+                [specificHarborIntersectionId]: {
+                  ...match.board!.intersections[specificHarborIntersectionId]!,
+                  building: {
+                    ownerPlayerId: "p1",
+                    buildingType: "settlement",
+                  },
+                },
+              },
+            },
+          },
+          "p1",
+          { wood: 2, ore: 0 },
+        ),
+      );
+
+      const traded = tradeWithBank(specificHarborMatch, "p1", {
+        giveResources: { wood: 2 },
+        receiveResources: { ore: 1 },
+      });
+      expect(traded.players?.find((player) => player.playerId === "p1")?.resources).toMatchObject({
+        wood: 0,
+        ore: 1,
+      });
+    }
+
+    expect(() =>
+      tradeWithBank(base, "p1", {
+        giveResources: { wood: 3 },
+        receiveResources: { ore: 1 },
+      }),
+    ).toThrowError(MatchEngineError);
+  });
+
+  it("counts victory point development cards as hidden points and total victory", () => {
+    const match = completeSetup(4);
+    const targetUpgradeId = match.players?.find((player) => player.playerId === "p1")?.initialSettlementIntersectionIds[0]!;
+    const manualBoard = structuredClone(match.board!);
+    const extraIntersectionIds = Object.keys(manualBoard.intersections)
+      .filter((intersectionId) => !manualBoard.intersections[intersectionId]!.building)
+      .slice(0, 3);
+
+    manualBoard.intersections[targetUpgradeId] = {
+      ...manualBoard.intersections[targetUpgradeId]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "city",
+      },
+    };
+    manualBoard.intersections[extraIntersectionIds[0]!] = {
+      ...manualBoard.intersections[extraIntersectionIds[0]!]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "city",
+      },
+    };
+    manualBoard.intersections[extraIntersectionIds[1]!] = {
+      ...manualBoard.intersections[extraIntersectionIds[1]!]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "city",
+      },
+    };
+    manualBoard.intersections[extraIntersectionIds[2]!] = {
+      ...manualBoard.intersections[extraIntersectionIds[2]!]!,
+      building: {
+        ownerPlayerId: "p1",
+        buildingType: "settlement",
+      },
+    };
+
+    const primed = withDevelopmentCards(
+      {
+        ...match,
+        board: manualBoard,
+        turn: {
+          ...match.turn!,
+          activePlayerId: "p4",
+          phase: "action_phase",
+        },
+      },
+      "p1",
+      { victory_point: 2 },
+    );
+
+    expect(calculateVisiblePoints(primed).p1).toBe(8);
+    expect(calculateHiddenPoints(primed).p1).toBe(2);
+
+    const won = endTurn(primed, "p4", {
+      now: "2026-04-04T10:05:00.000Z",
+    });
+
+    expect(won.status).toBe("match_finished");
+    expect(won.winnerPlayerId).toBe("p1");
   });
 
   it("produces 2 for a city and 0 when the robber blocks the hex", () => {

@@ -1,20 +1,49 @@
 import {
+  buildRoad,
+  buildSettlement,
+  buyDevelopmentCard,
+  cancelTrade,
+  confirmTrade,
   createRoom,
   disconnectPlayer,
+  discardResources,
+  endTurn,
+  finishMatch,
+  initializeMatchSetup,
   joinRoom,
   leaveRoom,
+  markMatchInProgress,
+  moveRobber,
+  offerTrade,
+  placeInitialRoad,
+  placeInitialSettlement,
+  pickMonopolyResourceType,
+  pickYearOfPlentyResource,
+  playKnight,
+  playMonopoly,
+  playRoadBuilding,
+  playYearOfPlenty,
+  projectMatchView,
   projectRoomView,
   reassignColor,
   reassignSeat,
   reattachPlayer,
+  respondTrade,
+  rollDice,
   startMatch,
+  stealResource,
+  tradeWithBank,
   toggleReady,
+  upgradeCity,
 } from "../../../packages/game-engine/src/index.js";
 import type {
+  ClientSubmitCommandMessage,
   CommandAcceptedMessage,
+  CommandRejectedMessage,
   LifecycleTransitionMessage,
   MatchSnapshotMessage,
   MatchState,
+  MatchCommandType,
   PlayerColor,
   PlayerCount,
   PresenceUpdatedMessage,
@@ -29,6 +58,12 @@ interface SessionBinding {
   sessionId: string;
   playerId: string;
   roomId: string;
+}
+
+interface RecordedMatchCommand {
+  room: RoomState;
+  match?: MatchState | undefined;
+  dispatches: RealtimeDispatch[];
 }
 
 export interface RealtimeDispatch {
@@ -56,6 +91,7 @@ export class InMemoryRealtimeService {
   private readonly roomCodes = new Map<string, string>();
   private readonly matches = new Map<string, MatchState>();
   private readonly sessions = new Map<string, SessionBinding>();
+  private readonly processedMatchCommands = new Map<string, RecordedMatchCommand>();
   private roomCounter = 0;
   private roomCodeCounter = 1000;
   private matchCounter = 0;
@@ -223,23 +259,25 @@ export class InMemoryRealtimeService {
     const binding = this.requireSession(input.sessionId);
     const room = this.requireRoom(binding.roomId);
     const { room: nextRoom, match } = startMatch(room, this.lifecycleContext(), binding.playerId);
+    const setupMatch = initializeMatchSetup(match);
 
     this.storeRoom(nextRoom);
-    this.matches.set(match.matchId, match);
+    this.matches.set(setupMatch.matchId, setupMatch);
 
     const dispatches = [
       {
         sessionId: input.sessionId,
         message: this.commandAccepted(input.commandId, input.sessionId, nextRoom.version, "match_start_requested"),
       },
-      ...this.broadcastLifecycleTransition(nextRoom, room.status, nextRoom.status, match.matchId),
+      ...this.broadcastLifecycleTransition(nextRoom, room.status, nextRoom.status, setupMatch.matchId),
+      ...this.broadcastMatchLifecycleTransition(nextRoom, match.status, setupMatch.status, setupMatch.matchId),
       ...this.broadcastRoomUpdated(nextRoom),
-      ...this.broadcastMatchSnapshot(nextRoom, match),
+      ...this.broadcastMatchSnapshot(nextRoom, setupMatch),
     ];
 
     return {
       room: nextRoom,
-      match,
+      match: setupMatch,
       dispatches,
     };
   }
@@ -329,6 +367,129 @@ export class InMemoryRealtimeService {
     return this.rooms.get(roomId);
   }
 
+  submitMatchCommand(input: {
+    commandId: string;
+    sessionId: string;
+    matchId: string;
+    commandType: MatchCommandType;
+    payload?: ClientSubmitCommandMessage["payload"];
+    clientStateVersion?: number;
+  }): RealtimeCommandResult {
+    try {
+      const duplicate = this.processedMatchCommands.get(this.matchCommandHistoryKey(input.sessionId, input.commandId));
+      if (duplicate) {
+        return duplicate;
+      }
+
+      const binding = this.requireSession(input.sessionId);
+      const room = this.requireRoom(binding.roomId);
+      const match = this.requireMatchInRoom(input.matchId, room.roomId);
+      this.ensurePlayerBelongsToMatch(binding.playerId, match);
+      this.ensureFreshClientState(input.clientStateVersion, match.version);
+
+      const context = {
+        now: this.now(),
+      };
+
+      const nextMatch = this.executeMatchCommand(match, binding.playerId, input.commandType, input.payload ?? {}, context);
+      const result = this.applyMatchUpdate(nextMatch);
+      const acceptedResult = {
+        ...result,
+        dispatches: [
+          {
+            sessionId: input.sessionId,
+            message: this.commandAccepted(input.commandId, input.sessionId, nextMatch.version, input.commandType.toLowerCase()),
+          },
+          ...result.dispatches,
+        ],
+      } satisfies RealtimeCommandResult;
+
+      this.processedMatchCommands.set(this.matchCommandHistoryKey(input.sessionId, input.commandId), acceptedResult);
+
+      return acceptedResult;
+    } catch (error) {
+      const fallbackSession = this.sessions.get(input.sessionId);
+      const fallbackMatch = this.matches.get(input.matchId);
+      const fallbackRoom =
+        (fallbackSession ? this.rooms.get(fallbackSession.roomId) : undefined) ??
+        (fallbackMatch ? this.rooms.get(fallbackMatch.roomId) : undefined);
+
+      if (!fallbackRoom) {
+        throw error;
+      }
+
+      const reasonCode =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof (error as { code?: unknown }).code === "string"
+          ? ((error as { code: string }).code)
+          : error instanceof Error
+            ? error.name
+            : "command_rejected";
+      return {
+        room: fallbackRoom,
+        match: fallbackMatch,
+        dispatches: [
+          {
+            sessionId: input.sessionId,
+            message: this.commandRejected(
+              input.commandId,
+              input.sessionId,
+              reasonCode,
+              error instanceof Error ? error.message : "Command failed.",
+              fallbackMatch?.version,
+            ),
+          },
+        ],
+      };
+    }
+  }
+
+  applyMatchUpdate(match: MatchState): RealtimeCommandResult {
+    const previousMatch = this.matches.get(match.matchId);
+    const room = this.requireRoom(match.roomId);
+
+    this.matches.set(match.matchId, match);
+
+    let nextRoom = room;
+    const dispatches: RealtimeDispatch[] = [];
+
+    if (room.currentMatchId === match.matchId && room.status === "room_match_starting" && match.status === "match_in_progress") {
+      nextRoom = markMatchInProgress(room, this.lifecycleContext(), match.matchId);
+      this.storeRoom(nextRoom);
+      dispatches.push(...this.broadcastLifecycleTransition(nextRoom, room.status, nextRoom.status, match.matchId));
+      dispatches.push(...this.broadcastRoomUpdated(nextRoom));
+    }
+
+    if (match.status === "match_finished" && room.currentMatchId === match.matchId) {
+      nextRoom = finishMatch(nextRoom, this.lifecycleContext(), {
+        summary: {
+          matchId: match.matchId,
+          finishedAt: match.finishedAt ?? this.now(),
+          winnerPlayerId: match.winnerPlayerId!,
+          winningTotalPoints: projectMatchView(match, match.winnerPlayerId!).totalPointsForPlayer ?? 10,
+          victoryCause: match.victoryCause ?? "score_threshold",
+        },
+      });
+      this.storeRoom(nextRoom);
+      dispatches.push(...this.broadcastLifecycleTransition(nextRoom, room.status === "room_match_starting" ? "room_match_in_progress" : room.status, nextRoom.status, match.matchId));
+      dispatches.push(...this.broadcastRoomUpdated(nextRoom));
+    }
+
+    if (previousMatch && previousMatch.status !== match.status) {
+      dispatches.push(...this.broadcastMatchLifecycleTransition(nextRoom, previousMatch.status, match.status, match.matchId));
+    }
+
+    dispatches.push(...this.broadcastMatchSnapshot(nextRoom, match));
+
+    return {
+      room: nextRoom,
+      match,
+      dispatches,
+    };
+  }
+
   private broadcastRoomUpdated(room: RoomState, excludeSessionId?: string): RealtimeDispatch[] {
     return room.players
       .filter((player) => player.presence === "connected" && player.sessionId !== excludeSessionId)
@@ -411,14 +572,29 @@ export class InMemoryRealtimeService {
       roomId: room.roomId,
       matchId: match.matchId,
       matchVersion: match.version,
-      playerView: {
-        matchId: match.matchId,
-        matchStatus: match.status,
-        matchVersion: match.version,
-        playerId,
-        playerOrder: match.playerOrder,
-      },
+      playerView: projectMatchView(match, playerId),
     };
+  }
+
+  private broadcastMatchLifecycleTransition(
+    room: RoomState,
+    fromState: MatchState["status"],
+    toState: MatchState["status"],
+    matchId: string,
+  ): RealtimeDispatch[] {
+    return room.players
+      .filter((player) => player.presence === "connected")
+      .map((player) => ({
+        sessionId: player.sessionId,
+        message: {
+          type: "server.lifecycle_transition",
+          roomId: room.roomId,
+          context: "match",
+          fromState,
+          toState,
+          matchId,
+        } satisfies LifecycleTransitionMessage,
+      }));
   }
 
   private sessionAttached(
@@ -449,6 +625,23 @@ export class InMemoryRealtimeService {
     };
   }
 
+  private commandRejected(
+    commandId: string,
+    sessionId: string,
+    reasonCode: string,
+    message: string,
+    currentRelevantVersion?: number,
+  ): CommandRejectedMessage {
+    return {
+      type: "server.command_rejected",
+      sessionId,
+      commandId,
+      reasonCode,
+      message,
+      currentRelevantVersion,
+    };
+  }
+
   private lifecycleContext() {
     return {
       now: this.now(),
@@ -469,10 +662,91 @@ export class InMemoryRealtimeService {
     this.roomCodes.set(room.roomCode, room.roomId);
   }
 
+  private requireMatch(matchId: string): MatchState {
+    const match = this.matches.get(matchId);
+    if (!match) {
+      throw new RealtimeServiceError("match_not_found", `Unknown match: ${matchId}`);
+    }
+    return match;
+  }
+
+  private requireMatchInRoom(matchId: string, roomId: string): MatchState {
+    const match = this.requireMatch(matchId);
+    if (match.roomId !== roomId) {
+      throw new RealtimeServiceError("match_not_in_room", `Match ${matchId} does not belong to room ${roomId}.`);
+    }
+    return match;
+  }
+
+  private executeMatchCommand(
+    match: MatchState,
+    playerId: string,
+    commandType: MatchCommandType,
+    payload: Record<string, unknown>,
+    context: { now: string },
+  ): MatchState {
+    switch (commandType) {
+      case "PLACE_INITIAL_SETTLEMENT":
+        return placeInitialSettlement(match, playerId, payload.intersectionId as string);
+      case "PLACE_INITIAL_ROAD":
+        return placeInitialRoad(match, playerId, payload.edgeId as string);
+      case "ROLL_DICE":
+        return rollDice(match, playerId, context);
+      case "END_TURN":
+        return endTurn(match, playerId, context);
+      case "BUILD_ROAD":
+        return buildRoad(match, playerId, payload.edgeId as string, context);
+      case "BUILD_SETTLEMENT":
+        return buildSettlement(match, playerId, payload.intersectionId as string, context);
+      case "UPGRADE_CITY":
+        return upgradeCity(match, playerId, payload.intersectionId as string, context);
+      case "DISCARD_RESOURCES":
+        return discardResources(match, playerId, {
+          resources: (payload.resources ?? {}) as Record<string, number>,
+        });
+      case "MOVE_ROBBER":
+        return moveRobber(match, playerId, payload.targetHexId as string);
+      case "STEAL_RESOURCE":
+        return stealResource(match, playerId, payload.victimPlayerId as string, context);
+      case "BUY_DEV_CARD":
+        return buyDevelopmentCard(match, playerId);
+      case "PLAY_DEV_CARD_KNIGHT":
+        return playKnight(match, playerId, context);
+      case "PLAY_DEV_CARD_YEAR_OF_PLENTY":
+        return playYearOfPlenty(match, playerId);
+      case "PICK_YEAR_OF_PLENTY_RESOURCE":
+        return pickYearOfPlentyResource(match, playerId, payload.resourceType as "wood" | "brick" | "sheep" | "wheat" | "ore");
+      case "PLAY_DEV_CARD_MONOPOLY":
+        return playMonopoly(match, playerId);
+      case "PICK_MONOPOLY_RESOURCE_TYPE":
+        return pickMonopolyResourceType(match, playerId, payload.resourceType as "wood" | "brick" | "sheep" | "wheat" | "ore");
+      case "PLAY_DEV_CARD_ROAD_BUILDING":
+        return playRoadBuilding(match, playerId);
+      case "OFFER_TRADE":
+        return offerTrade(match, playerId, {
+          offeredResources: (payload.offeredResources ?? {}) as Record<string, number>,
+          requestedResources: (payload.requestedResources ?? {}) as Record<string, number>,
+        });
+      case "RESPOND_TRADE":
+        return respondTrade(match, playerId, payload.tradeId as string, payload.response as "accept" | "reject");
+      case "CONFIRM_TRADE":
+        return confirmTrade(match, playerId, payload.tradeId as string, payload.counterpartyPlayerId as string);
+      case "CANCEL_TRADE":
+        return cancelTrade(match, playerId, payload.tradeId as string);
+      case "TRADE_WITH_BANK":
+        return tradeWithBank(match, playerId, {
+          giveResources: (payload.giveResources ?? {}) as Record<string, number>,
+          receiveResources: (payload.receiveResources ?? {}) as Record<string, number>,
+        });
+      default:
+        throw new Error(`Unsupported command type: ${commandType}`);
+    }
+  }
+
   private requireSession(sessionId: string): SessionBinding {
     const binding = this.sessions.get(sessionId);
     if (!binding) {
-      throw new Error(`Unknown session: ${sessionId}`);
+      throw new RealtimeServiceError("session_not_found", `Unknown session: ${sessionId}`);
     }
 
     return binding;
@@ -481,7 +755,7 @@ export class InMemoryRealtimeService {
   private requireRoom(roomId: string): RoomState {
     const room = this.rooms.get(roomId);
     if (!room) {
-      throw new Error(`Unknown room: ${roomId}`);
+      throw new RealtimeServiceError("room_not_found", `Unknown room: ${roomId}`);
     }
 
     return room;
@@ -490,10 +764,33 @@ export class InMemoryRealtimeService {
   private requireRoomByCode(roomCode: string): RoomState {
     const roomId = this.roomCodes.get(roomCode);
     if (!roomId) {
-      throw new Error(`Unknown room code: ${roomCode}`);
+      throw new RealtimeServiceError("room_not_found", `Unknown room code: ${roomCode}`);
     }
 
     return this.requireRoom(roomId);
+  }
+
+  private ensurePlayerBelongsToMatch(playerId: string, match: MatchState): void {
+    if (!match.playerOrder.includes(playerId)) {
+      throw new RealtimeServiceError("player_not_in_match", `Player ${playerId} does not belong to match ${match.matchId}.`);
+    }
+  }
+
+  private ensureFreshClientState(clientStateVersion: number | undefined, currentMatchVersion: number): void {
+    if (clientStateVersion === undefined) {
+      return;
+    }
+
+    if (clientStateVersion !== currentMatchVersion) {
+      throw new RealtimeServiceError(
+        "stale_state",
+        `Client state version ${clientStateVersion} does not match current match version ${currentMatchVersion}.`,
+      );
+    }
+  }
+
+  private matchCommandHistoryKey(sessionId: string, commandId: string): string {
+    return `${sessionId}:${commandId}`;
   }
 
   private now(): string {
@@ -518,5 +815,15 @@ export class InMemoryRealtimeService {
   private nextMatchSeed(): string {
     this.seedCounter += 1;
     return this.options.matchSeedFactory?.() ?? `seed-${this.seedCounter}`;
+  }
+}
+
+class RealtimeServiceError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RealtimeServiceError";
   }
 }

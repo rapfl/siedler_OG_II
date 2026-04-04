@@ -103,7 +103,7 @@ describe("setup engine", () => {
     expect(match.status).toBe("match_in_progress");
     expect(match.turn).toMatchObject({
       activePlayerId: "p1",
-      phase: "roll_pending",
+      phase: "pre_roll_devcard_window",
       turnNumber: 1,
     });
     expect(match.players?.every((player) => player.initialSettlementIntersectionIds.length === 2)).toBe(true);

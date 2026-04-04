@@ -1,15 +1,20 @@
 import type {
   BoardEdge,
   BoardIntersection,
+  DevelopmentCardCounts,
+  DevelopmentCardResolution,
+  DevelopmentCardType,
   GeneratedBoard,
   MatchPlayerState,
   MatchState,
   ResourceCounts,
   ResourceType,
+  TradeOfferState,
+  TradeResponse,
   TurnState,
 } from "../../../shared-types/src/index.js";
 
-import { emptyResourceCounts, sumResourceCounts } from "./setup-engine.js";
+import { emptyDevelopmentCardCounts, emptyResourceCounts, sumResourceCounts } from "./setup-engine.js";
 
 const ROAD_COST: ResourceCounts = {
   wood: 1,
@@ -35,12 +40,25 @@ const CITY_COST: ResourceCounts = {
   ore: 3,
 };
 
+const DEVELOPMENT_CARD_COST: ResourceCounts = {
+  wood: 0,
+  brick: 0,
+  sheep: 1,
+  wheat: 1,
+  ore: 1,
+};
+
 export type MatchEngineErrorCode =
   | "MATCH_NOT_IN_PROGRESS"
   | "MATCH_ALREADY_FINISHED"
   | "TURN_STATE_MISSING"
   | "NOT_ACTIVE_PLAYER"
   | "INVALID_TURN_PHASE"
+  | "DEV_DECK_EMPTY"
+  | "DEV_CARD_NOT_AVAILABLE"
+  | "DEV_CARD_PURCHASED_THIS_TURN"
+  | "DEV_CARD_ALREADY_PLAYED_THIS_TURN"
+  | "INVALID_DEV_CARD_RESOLUTION"
   | "PLAYER_NOT_PENDING_DISCARD"
   | "INVALID_DISCARD_COUNT"
   | "INVALID_DISCARD_RESOURCES"
@@ -56,7 +74,12 @@ export type MatchEngineErrorCode =
   | "SETTLEMENT_DISTANCE_RULE"
   | "SETTLEMENT_REQUIRES_ROAD_CONNECTION"
   | "BUILDING_NOT_OWN_SETTLEMENT"
-  | "INSUFFICIENT_RESOURCES";
+  | "INSUFFICIENT_RESOURCES"
+  | "TRADE_ALREADY_OPEN"
+  | "TRADE_NOT_OPEN"
+  | "INVALID_TRADE_RESPONSE"
+  | "INVALID_TRADE_RESOURCES"
+  | "INVALID_BANK_TRADE_RATIO";
 
 export class MatchEngineError extends Error {
   constructor(
@@ -87,22 +110,72 @@ export interface StealResourceContext extends MatchEngineContext {
   forcedResourceType?: ResourceType;
 }
 
+export interface TradeResourcesInput {
+  offeredResources: Partial<ResourceCounts>;
+  requestedResources: Partial<ResourceCounts>;
+}
+
+export interface BankTradeInput {
+  giveResources: Partial<ResourceCounts>;
+  receiveResources: Partial<ResourceCounts>;
+}
+
+export function buyDevelopmentCard(match: MatchState, actorPlayerId: string): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "action_phase");
+
+  const topCard = match.developmentDeck?.[0];
+  if (!topCard) {
+    throw new MatchEngineError("DEV_DECK_EMPTY", "Development deck is empty.");
+  }
+
+  const nextPlayers = payCost(players, actorPlayerId, DEVELOPMENT_CARD_COST).map((player) =>
+    player.playerId === actorPlayerId
+      ? {
+          ...player,
+          developmentCards: incrementDevelopmentCardCount(player.developmentCards, topCard, 1),
+        }
+      : player,
+  );
+
+  return {
+    ...match,
+    players: nextPlayers,
+    developmentDeck: match.developmentDeck?.slice(1),
+    turn: {
+      ...turn,
+      purchasedDevelopmentCardsThisTurn: incrementDevelopmentCardCount(
+        turn.purchasedDevelopmentCardsThisTurn,
+        topCard,
+        1,
+      ),
+    },
+    version: match.version + 1,
+  };
+}
+
 export function rollDice(match: MatchState, actorPlayerId: string, context: MatchEngineContext): MatchState {
   const { board, players, turn } = requireTurnContext(match);
   ensureActivePlayer(turn, actorPlayerId);
-  ensureTurnPhase(turn, "roll_pending");
+  ensureTurnPhase(turn, ["pre_roll_devcard_window", "roll_pending"]);
 
   const { total, nextRngState } = nextDiceRoll(match.rngState ?? 1, context.forcedRollTotal);
   const nextTurn: TurnState = {
     ...turn,
     phase: total === 7 ? resolveSevenPhase(players) : "action_phase",
     lastRoll: total,
+    developmentCardResolution: undefined,
+    pendingYearOfPlentyResources: undefined,
+    tradeOffer: undefined,
     discardPlayerIds:
       total === 7
         ? players.filter((player) => sumResourceCounts(player.resources) >= 8).map((player) => player.playerId)
         : undefined,
     discardResolvedPlayerIds: total === 7 ? [] : undefined,
     stealablePlayerIds: undefined,
+    pendingRobberReason: total === 7 ? "rolled_seven" : undefined,
+    pendingRobberReturnPhase: total === 7 ? "action_phase" : undefined,
   };
 
   if (total === 7) {
@@ -137,12 +210,19 @@ export function endTurn(match: MatchState, actorPlayerId: string, context: Match
     ...match,
     turn: {
       activePlayerId: nextPlayerId,
-      phase: "roll_pending",
+      phase: "pre_roll_devcard_window",
       turnNumber: turn.turnNumber + 1,
       lastRoll: undefined,
+      hasPlayedDevCardThisTurn: false,
+      purchasedDevelopmentCardsThisTurn: undefined,
+      developmentCardResolution: undefined,
+      pendingYearOfPlentyResources: undefined,
+      tradeOffer: undefined,
       discardPlayerIds: undefined,
       discardResolvedPlayerIds: undefined,
       stealablePlayerIds: undefined,
+      pendingRobberReason: undefined,
+      pendingRobberReturnPhase: undefined,
     },
     version: match.version + 1,
   };
@@ -153,7 +233,7 @@ export function endTurn(match: MatchState, actorPlayerId: string, context: Match
 export function buildRoad(match: MatchState, actorPlayerId: string, edgeId: string, context: MatchEngineContext): MatchState {
   const { board, players, turn } = requireTurnContext(match);
   ensureActivePlayer(turn, actorPlayerId);
-  ensureTurnPhase(turn, "action_phase");
+  ensureTurnPhase(turn, ["action_phase", "devcard_resolution"]);
 
   const edge = board.edges[edgeId];
   if (!edge) {
@@ -166,7 +246,16 @@ export function buildRoad(match: MatchState, actorPlayerId: string, edgeId: stri
     throw new MatchEngineError("ROAD_NOT_CONNECTED", "Road must connect to the player's road network or building.");
   }
 
-  const nextPlayers = payCost(players, actorPlayerId, ROAD_COST);
+  const isRoadBuildingResolution =
+    turn.phase === "devcard_resolution" &&
+    (turn.developmentCardResolution === "road_building_place_1" ||
+      turn.developmentCardResolution === "road_building_place_2");
+
+  if (turn.phase === "devcard_resolution" && !isRoadBuildingResolution) {
+    throw new MatchEngineError("INVALID_DEV_CARD_RESOLUTION", "Current development card resolution does not allow road placement.");
+  }
+
+  const nextPlayers = isRoadBuildingResolution ? players : payCost(players, actorPlayerId, ROAD_COST);
   const nextBoard: GeneratedBoard = {
     ...board,
     edges: {
@@ -184,6 +273,7 @@ export function buildRoad(match: MatchState, actorPlayerId: string, edgeId: stri
     ...match,
     board: nextBoard,
     players: nextPlayers,
+    turn: isRoadBuildingResolution ? advanceRoadBuildingTurn(turn, nextBoard, actorPlayerId) : turn,
     version: match.version + 1,
   });
 
@@ -305,7 +395,394 @@ export function calculateVisiblePoints(match: MatchState): Record<string, number
     points[match.longestRoadHolderPlayerId] = (points[match.longestRoadHolderPlayerId] ?? 0) + 2;
   }
 
+  if (match.largestArmyHolderPlayerId) {
+    points[match.largestArmyHolderPlayerId] = (points[match.largestArmyHolderPlayerId] ?? 0) + 2;
+  }
+
   return points;
+}
+
+export function calculateHiddenPoints(match: MatchState): Record<string, number> {
+  const { players } = requirePlayers(match);
+
+  return Object.fromEntries(
+    match.playerOrder.map((playerId) => [
+      playerId,
+      players.find((player) => player.playerId === playerId)?.developmentCards?.victory_point ?? 0,
+    ]),
+  ) as Record<string, number>;
+}
+
+export function calculateTotalPoints(match: MatchState): Record<string, number> {
+  const visiblePoints = calculateVisiblePoints(match);
+  const hiddenPoints = calculateHiddenPoints(match);
+
+  return Object.fromEntries(
+    match.playerOrder.map((playerId) => [playerId, (visiblePoints[playerId] ?? 0) + (hiddenPoints[playerId] ?? 0)]),
+  ) as Record<string, number>;
+}
+
+export function playKnight(match: MatchState, actorPlayerId: string, context: MatchEngineContext): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, ["pre_roll_devcard_window", "action_phase"]);
+
+  if (turn.hasPlayedDevCardThisTurn) {
+    throw new MatchEngineError(
+      "DEV_CARD_ALREADY_PLAYED_THIS_TURN",
+      "Only one development card may be played during a turn.",
+    );
+  }
+
+  assertPlayableDevelopmentCard(players, turn, actorPlayerId, "knight");
+
+  const nextPlayers = players.map((player) =>
+    player.playerId === actorPlayerId
+      ? {
+          ...player,
+          developmentCards: incrementDevelopmentCardCount(player.developmentCards, "knight", -1),
+          playedKnightCount: (player.playedKnightCount ?? 0) + 1,
+        }
+      : player,
+  );
+
+  const nextMatch = recalculateLargestArmy({
+    ...match,
+    players: nextPlayers,
+    turn: {
+      ...turn,
+      phase: "robber_pending",
+      hasPlayedDevCardThisTurn: true,
+      developmentCardResolution: undefined,
+      pendingYearOfPlentyResources: undefined,
+      tradeOffer: undefined,
+      discardPlayerIds: undefined,
+      discardResolvedPlayerIds: undefined,
+      stealablePlayerIds: undefined,
+      pendingRobberReason: "played_knight",
+      pendingRobberReturnPhase: turn.phase === "pre_roll_devcard_window" ? "roll_pending" : "action_phase",
+    },
+    version: match.version + 1,
+  });
+
+  return evaluateVictory(nextMatch, actorPlayerId, context.now, "score_threshold");
+}
+
+export function playYearOfPlenty(match: MatchState, actorPlayerId: string): MatchState {
+  return startDevelopmentCardResolution(match, actorPlayerId, "year_of_plenty", "year_of_plenty_pick_1");
+}
+
+export function pickYearOfPlentyResource(match: MatchState, actorPlayerId: string, resourceType: ResourceType): MatchState {
+  const { turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "devcard_resolution");
+
+  if (
+    turn.developmentCardResolution !== "year_of_plenty_pick_1" &&
+    turn.developmentCardResolution !== "year_of_plenty_pick_2"
+  ) {
+    throw new MatchEngineError(
+      "INVALID_DEV_CARD_RESOLUTION",
+      "Current development card resolution does not allow Year of Plenty picks.",
+    );
+  }
+
+  const pickedResources = [...(turn.pendingYearOfPlentyResources ?? []), resourceType];
+  if (pickedResources.length === 1) {
+    return {
+      ...match,
+      turn: {
+        ...turn,
+        developmentCardResolution: "year_of_plenty_pick_2",
+        pendingYearOfPlentyResources: pickedResources,
+      },
+      version: match.version + 1,
+    };
+  }
+
+  const { players } = requirePlayers(match);
+  const nextPlayers = players.map((player) =>
+    player.playerId === actorPlayerId
+      ? {
+          ...player,
+          resources: addResources(player.resources, resourceCountsFromTypes(pickedResources)),
+        }
+      : player,
+  );
+
+  return {
+    ...match,
+    players: nextPlayers,
+    turn: clearDevelopmentCardResolution(turn),
+    version: match.version + 1,
+  };
+}
+
+export function playMonopoly(match: MatchState, actorPlayerId: string): MatchState {
+  return startDevelopmentCardResolution(match, actorPlayerId, "monopoly", "monopoly_pick_resource");
+}
+
+export function pickMonopolyResourceType(match: MatchState, actorPlayerId: string, resourceType: ResourceType): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "devcard_resolution");
+
+  if (turn.developmentCardResolution !== "monopoly_pick_resource") {
+    throw new MatchEngineError(
+      "INVALID_DEV_CARD_RESOLUTION",
+      "Current development card resolution does not allow Monopoly selection.",
+    );
+  }
+
+  let collectedCount = 0;
+  const nextPlayers = players.map((player) => {
+    if (player.playerId === actorPlayerId) {
+      return player;
+    }
+
+    const count = player.resources[resourceType];
+    collectedCount += count;
+    return {
+      ...player,
+      resources: subtractResources(player.resources, {
+        ...emptyResourceCounts(),
+        [resourceType]: count,
+      }),
+    };
+  }).map((player) =>
+    player.playerId === actorPlayerId
+      ? {
+          ...player,
+          resources: addResources(player.resources, {
+            ...emptyResourceCounts(),
+            [resourceType]: collectedCount,
+          }),
+        }
+      : player,
+  );
+
+  return {
+    ...match,
+    players: nextPlayers,
+    turn: clearDevelopmentCardResolution(turn),
+    version: match.version + 1,
+  };
+}
+
+export function playRoadBuilding(match: MatchState, actorPlayerId: string): MatchState {
+  const nextMatch = startDevelopmentCardResolution(match, actorPlayerId, "road_building", "road_building_place_1");
+  const { board, turn } = requireTurnContext(nextMatch);
+
+  if (!hasAnyLegalRoadPlacement(board, actorPlayerId)) {
+    throw new MatchEngineError(
+      "ROAD_NOT_CONNECTED",
+      "Road Building requires at least one legal road placement for the active player.",
+    );
+  }
+
+  return {
+    ...nextMatch,
+    turn: {
+      ...turn,
+      developmentCardResolution: "road_building_place_1",
+    },
+  };
+}
+
+export function offerTrade(match: MatchState, actorPlayerId: string, input: TradeResourcesInput): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "action_phase");
+
+  if (turn.tradeOffer) {
+    throw new MatchEngineError("TRADE_ALREADY_OPEN", "A trade offer is already open.");
+  }
+
+  const offeredResources = normalizeResourceCounts(input.offeredResources);
+  const requestedResources = normalizeResourceCounts(input.requestedResources);
+  assertTradePayload(offeredResources, requestedResources);
+
+  const actor = players.find((player) => player.playerId === actorPlayerId)!;
+  if (!hasResources(actor.resources, offeredResources)) {
+    throw new MatchEngineError("INVALID_TRADE_RESOURCES", "Active player cannot offer resources they do not have.");
+  }
+
+  const responses = Object.fromEntries(
+    match.playerOrder.filter((playerId) => playerId !== actorPlayerId).map((playerId) => [playerId, "reject" satisfies TradeResponse]),
+  ) as Record<string, TradeResponse>;
+
+  for (const playerId of Object.keys(responses)) {
+    delete responses[playerId];
+  }
+
+  return {
+    ...match,
+    turn: {
+      ...turn,
+      tradeOffer: {
+        tradeId: `trade-${turn.turnNumber}-${match.version + 1}`,
+        offeredByPlayerId: actorPlayerId,
+        offeredResources,
+        requestedResources,
+        responses,
+      },
+    },
+    version: match.version + 1,
+  };
+}
+
+export function respondTrade(
+  match: MatchState,
+  actorPlayerId: string,
+  tradeId: string,
+  response: TradeResponse,
+): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureTurnPhase(turn, "action_phase");
+  const tradeOffer = requireTradeOffer(turn, tradeId);
+
+  if (actorPlayerId === turn.activePlayerId) {
+    throw new MatchEngineError("INVALID_TRADE_RESPONSE", "Active player cannot respond to their own trade offer.");
+  }
+
+  const actor = players.find((player) => player.playerId === actorPlayerId)!;
+  if (response === "accept" && !hasResources(actor.resources, tradeOffer.requestedResources)) {
+    throw new MatchEngineError("INVALID_TRADE_RESOURCES", "Responder cannot accept without the requested resources.");
+  }
+
+  if (tradeOffer.responses[actorPlayerId]) {
+    throw new MatchEngineError("INVALID_TRADE_RESPONSE", "Responder has already given a final response.");
+  }
+
+  const nextTradeOffer: TradeOfferState = {
+    ...tradeOffer,
+    responses: {
+      ...tradeOffer.responses,
+      [actorPlayerId]: response,
+    },
+  };
+
+  const allResponded = match.playerOrder
+    .filter((playerId) => playerId !== turn.activePlayerId)
+    .every((playerId) => nextTradeOffer.responses[playerId] !== undefined);
+  const anyAccepted = Object.values(nextTradeOffer.responses).includes("accept");
+
+  return {
+    ...match,
+    turn: {
+      ...turn,
+      tradeOffer: allResponded && !anyAccepted ? undefined : nextTradeOffer,
+    },
+    version: match.version + 1,
+  };
+}
+
+export function confirmTrade(match: MatchState, actorPlayerId: string, tradeId: string, counterpartyPlayerId: string): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "action_phase");
+  const tradeOffer = requireTradeOffer(turn, tradeId);
+
+  if (tradeOffer.responses[counterpartyPlayerId] !== "accept") {
+    throw new MatchEngineError("INVALID_TRADE_RESPONSE", "Selected counterparty has not accepted the trade.");
+  }
+
+  const actor = players.find((player) => player.playerId === actorPlayerId)!;
+  const counterparty = players.find((player) => player.playerId === counterpartyPlayerId)!;
+  if (!hasResources(actor.resources, tradeOffer.offeredResources) || !hasResources(counterparty.resources, tradeOffer.requestedResources)) {
+    throw new MatchEngineError("INVALID_TRADE_RESOURCES", "Trade can no longer be completed because resources changed.");
+  }
+
+  const nextPlayers = players.map((player) => {
+    if (player.playerId === actorPlayerId) {
+      return {
+        ...player,
+        resources: addResources(
+          subtractResources(player.resources, tradeOffer.offeredResources),
+          tradeOffer.requestedResources,
+        ),
+      };
+    }
+
+    if (player.playerId === counterpartyPlayerId) {
+      return {
+        ...player,
+        resources: addResources(
+          subtractResources(player.resources, tradeOffer.requestedResources),
+          tradeOffer.offeredResources,
+        ),
+      };
+    }
+
+    return player;
+  });
+
+  return {
+    ...match,
+    players: nextPlayers,
+    turn: {
+      ...turn,
+      tradeOffer: undefined,
+    },
+    version: match.version + 1,
+  };
+}
+
+export function cancelTrade(match: MatchState, actorPlayerId: string, tradeId: string): MatchState {
+  const { turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "action_phase");
+  requireTradeOffer(turn, tradeId);
+
+  return {
+    ...match,
+    turn: {
+      ...turn,
+      tradeOffer: undefined,
+    },
+    version: match.version + 1,
+  };
+}
+
+export function tradeWithBank(match: MatchState, actorPlayerId: string, input: BankTradeInput): MatchState {
+  const { board, players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, "action_phase");
+
+  const giveResources = normalizeResourceCounts(input.giveResources);
+  const receiveResources = normalizeResourceCounts(input.receiveResources);
+  const giveTypes = nonZeroResourceTypes(giveResources);
+  const receiveTypes = nonZeroResourceTypes(receiveResources);
+
+  if (giveTypes.length !== 1 || receiveTypes.length !== 1 || receiveResources[receiveTypes[0]!] !== 1) {
+    throw new MatchEngineError("INVALID_BANK_TRADE_RATIO", "Bank trade must exchange one resource type for exactly one target card.");
+  }
+
+  const giveType = giveTypes[0]!;
+  const ratio = getBestTradeRatio(board, actorPlayerId, giveType);
+  if (giveResources[giveType] !== ratio) {
+    throw new MatchEngineError("INVALID_BANK_TRADE_RATIO", "Offered bank-trade ratio is not legal for this player.");
+  }
+
+  const actor = players.find((player) => player.playerId === actorPlayerId)!;
+  if (!hasResources(actor.resources, giveResources)) {
+    throw new MatchEngineError("INVALID_TRADE_RESOURCES", "Player cannot complete the bank trade with current resources.");
+  }
+
+  const nextPlayers = players.map((player) =>
+    player.playerId === actorPlayerId
+      ? {
+          ...player,
+          resources: addResources(subtractResources(player.resources, giveResources), receiveResources),
+        }
+      : player,
+  );
+
+  return {
+    ...match,
+    players: nextPlayers,
+    version: match.version + 1,
+  };
 }
 
 export function discardResources(
@@ -353,6 +830,7 @@ export function discardResources(
     turn: {
       ...turn,
       phase: allResolved ? "robber_pending" : "discard_pending",
+      tradeOffer: undefined,
       discardResolvedPlayerIds: nextResolvedPlayerIds,
     },
     version: match.version + 1,
@@ -383,7 +861,8 @@ export function moveRobber(match: MatchState, actorPlayerId: string, targetHexId
   };
 
   const stealablePlayerIds = deriveStealablePlayerIds(players, board, actorPlayerId, targetHexId);
-  const phase = stealablePlayerIds.length > 0 ? "robber_pending" : "action_phase";
+  const resolutionPhase = turn.pendingRobberReturnPhase ?? "action_phase";
+  const phase = stealablePlayerIds.length > 0 ? "robber_pending" : resolutionPhase;
 
   return {
     ...match,
@@ -395,9 +874,12 @@ export function moveRobber(match: MatchState, actorPlayerId: string, targetHexId
     turn: {
       ...turn,
       phase,
-      discardPlayerIds: phase === "action_phase" ? undefined : turn.discardPlayerIds,
-      discardResolvedPlayerIds: phase === "action_phase" ? undefined : turn.discardResolvedPlayerIds,
+      discardPlayerIds: phase === "robber_pending" ? turn.discardPlayerIds : undefined,
+      discardResolvedPlayerIds: phase === "robber_pending" ? turn.discardResolvedPlayerIds : undefined,
       stealablePlayerIds: stealablePlayerIds.length > 0 ? stealablePlayerIds : undefined,
+      tradeOffer: undefined,
+      pendingRobberReason: phase === "robber_pending" ? turn.pendingRobberReason : undefined,
+      pendingRobberReturnPhase: phase === "robber_pending" ? turn.pendingRobberReturnPhase : undefined,
     },
     version: match.version + 1,
   };
@@ -458,10 +940,13 @@ export function stealResource(
     rngState: nextRngState,
     turn: {
       ...turn,
-      phase: "action_phase",
+      phase: turn.pendingRobberReturnPhase ?? "action_phase",
       discardPlayerIds: undefined,
       discardResolvedPlayerIds: undefined,
       stealablePlayerIds: undefined,
+      tradeOffer: undefined,
+      pendingRobberReason: undefined,
+      pendingRobberReturnPhase: undefined,
     },
     version: match.version + 1,
   };
@@ -519,6 +1004,54 @@ export function calculateLongestRoad(match: MatchState): LongestRoadResult {
   };
 }
 
+export interface LargestArmyResult {
+  holderPlayerId?: string | undefined;
+  size: number;
+  playedKnightCountByPlayerId: Record<string, number>;
+}
+
+export function calculateLargestArmy(match: MatchState): LargestArmyResult {
+  const { players } = requirePlayers(match);
+  const playedKnightCountByPlayerId = Object.fromEntries(
+    match.playerOrder.map((playerId) => [playerId, players.find((player) => player.playerId === playerId)?.playedKnightCount ?? 0]),
+  ) as Record<string, number>;
+
+  const maxSize = Math.max(0, ...Object.values(playedKnightCountByPlayerId));
+  if (maxSize < 3) {
+    return {
+      holderPlayerId: undefined,
+      size: maxSize,
+      playedKnightCountByPlayerId,
+    };
+  }
+
+  const leaders = Object.entries(playedKnightCountByPlayerId)
+    .filter(([, count]) => count === maxSize)
+    .map(([playerId]) => playerId);
+
+  if (leaders.length === 1) {
+    return {
+      holderPlayerId: leaders[0],
+      size: maxSize,
+      playedKnightCountByPlayerId,
+    };
+  }
+
+  if (match.largestArmyHolderPlayerId && leaders.includes(match.largestArmyHolderPlayerId)) {
+    return {
+      holderPlayerId: match.largestArmyHolderPlayerId,
+      size: maxSize,
+      playedKnightCountByPlayerId,
+    };
+  }
+
+  return {
+    holderPlayerId: undefined,
+    size: maxSize,
+    playedKnightCountByPlayerId,
+  };
+}
+
 function recalculateLongestRoad(match: MatchState): MatchState {
   const result = calculateLongestRoad(match);
 
@@ -529,15 +1062,25 @@ function recalculateLongestRoad(match: MatchState): MatchState {
   };
 }
 
+function recalculateLargestArmy(match: MatchState): MatchState {
+  const result = calculateLargestArmy(match);
+
+  return {
+    ...match,
+    largestArmyHolderPlayerId: result.holderPlayerId,
+    largestArmySize: result.size,
+  };
+}
+
 function evaluateVictory(
   match: MatchState,
   subjectPlayerId: string,
   now: string,
   victoryCause: MatchState["victoryCause"],
 ): MatchState {
-  const visiblePoints = calculateVisiblePoints(match);
+  const totalPoints = calculateTotalPoints(match);
 
-  if ((visiblePoints[subjectPlayerId] ?? 0) < 10) {
+  if ((totalPoints[subjectPlayerId] ?? 0) < 10) {
     return match;
   }
 
@@ -656,6 +1199,126 @@ function payCost(players: MatchPlayerState[], actorPlayerId: string, cost: Resou
   });
 }
 
+function assertPlayableDevelopmentCard(
+  players: MatchPlayerState[],
+  turn: TurnState,
+  actorPlayerId: string,
+  cardType: DevelopmentCardType,
+): void {
+  const actor = players.find((player) => player.playerId === actorPlayerId);
+  const totalCount = actor?.developmentCards?.[cardType] ?? 0;
+  if (totalCount <= 0) {
+    throw new MatchEngineError("DEV_CARD_NOT_AVAILABLE", "Player does not have the requested development card.");
+  }
+
+  const purchasedThisTurnCount = turn.purchasedDevelopmentCardsThisTurn?.[cardType] ?? 0;
+  if (totalCount <= purchasedThisTurnCount) {
+    throw new MatchEngineError(
+      "DEV_CARD_PURCHASED_THIS_TURN",
+      "Development cards bought this turn cannot be played during the same turn.",
+    );
+  }
+}
+
+function startDevelopmentCardResolution(
+  match: MatchState,
+  actorPlayerId: string,
+  cardType: Exclude<DevelopmentCardType, "victory_point">,
+  resolution: DevelopmentCardResolution,
+): MatchState {
+  const { players, turn } = requireTurnContext(match);
+  ensureActivePlayer(turn, actorPlayerId);
+  ensureTurnPhase(turn, ["pre_roll_devcard_window", "action_phase"]);
+
+  if (turn.hasPlayedDevCardThisTurn) {
+    throw new MatchEngineError(
+      "DEV_CARD_ALREADY_PLAYED_THIS_TURN",
+      "Only one development card may be played during a turn.",
+    );
+  }
+
+  assertPlayableDevelopmentCard(players, turn, actorPlayerId, cardType);
+
+  const nextPlayers = players.map((player) =>
+    player.playerId === actorPlayerId
+      ? {
+          ...player,
+          developmentCards: incrementDevelopmentCardCount(player.developmentCards, cardType, -1),
+        }
+      : player,
+  );
+
+  return {
+    ...match,
+    players: nextPlayers,
+    turn: {
+      ...turn,
+      phase: "devcard_resolution",
+      hasPlayedDevCardThisTurn: true,
+      developmentCardResolution: resolution,
+      pendingYearOfPlentyResources: undefined,
+      tradeOffer: undefined,
+    },
+    version: match.version + 1,
+  };
+}
+
+function clearDevelopmentCardResolution(turn: TurnState): TurnState {
+  return {
+    ...turn,
+    phase: "action_phase",
+    developmentCardResolution: undefined,
+    pendingYearOfPlentyResources: undefined,
+  };
+}
+
+function resourceCountsFromTypes(resourceTypes: ResourceType[]): ResourceCounts {
+  const counts = emptyResourceCounts();
+  for (const resourceType of resourceTypes) {
+    counts[resourceType] += 1;
+  }
+  return counts;
+}
+
+function advanceRoadBuildingTurn(turn: TurnState, board: GeneratedBoard, actorPlayerId: string): TurnState {
+  if (turn.developmentCardResolution === "road_building_place_1") {
+    return hasAnyLegalRoadPlacement(board, actorPlayerId)
+      ? {
+          ...turn,
+          phase: "devcard_resolution",
+          developmentCardResolution: "road_building_place_2",
+        }
+      : clearDevelopmentCardResolution(turn);
+  }
+
+  if (turn.developmentCardResolution === "road_building_place_2") {
+    return clearDevelopmentCardResolution(turn);
+  }
+
+  throw new MatchEngineError(
+    "INVALID_DEV_CARD_RESOLUTION",
+    "Current development card resolution does not allow Road Building placement.",
+  );
+}
+
+function hasAnyLegalRoadPlacement(board: GeneratedBoard, actorPlayerId: string): boolean {
+  return Object.values(board.edges).some((edge) => canBuildRoad(board, actorPlayerId, edge.edgeId));
+}
+
+function requireTradeOffer(turn: TurnState, tradeId: string): TradeOfferState {
+  if (!turn.tradeOffer || turn.tradeOffer.tradeId !== tradeId) {
+    throw new MatchEngineError("TRADE_NOT_OPEN", "Referenced trade offer is not open.");
+  }
+
+  return turn.tradeOffer;
+}
+
+function assertTradePayload(offeredResources: ResourceCounts, requestedResources: ResourceCounts): void {
+  if (sumResourceCounts(offeredResources) === 0 || sumResourceCounts(requestedResources) === 0) {
+    throw new MatchEngineError("INVALID_TRADE_RESOURCES", "Trade must offer and request at least one resource.");
+  }
+}
+
 function hasResources(available: ResourceCounts, required: ResourceCounts): boolean {
   return RESOURCE_TYPES.every((resourceType) => available[resourceType] >= required[resourceType]);
 }
@@ -677,6 +1340,19 @@ function addResources(resources: ResourceCounts, gain: ResourceCounts): Resource
     next[resourceType] += gain[resourceType];
   }
 
+  return next;
+}
+
+function incrementDevelopmentCardCount(
+  counts: DevelopmentCardCounts | undefined,
+  cardType: DevelopmentCardType,
+  delta: number,
+): DevelopmentCardCounts {
+  const next = {
+    ...(counts ?? emptyDevelopmentCardCounts()),
+  };
+
+  next[cardType] += delta;
   return next;
 }
 
@@ -702,6 +1378,26 @@ function canBuildRoad(board: GeneratedBoard, playerId: string, edgeId: string): 
 
     return intersection.adjacentEdgeIds.some((adjacentEdgeId) => board.edges[adjacentEdgeId]?.road?.ownerPlayerId === playerId);
   });
+}
+
+function getBestTradeRatio(board: GeneratedBoard, playerId: string, resourceType: ResourceType): 2 | 3 | 4 {
+  let hasGenericHarbor = false;
+
+  for (const intersection of Object.values(board.intersections)) {
+    if (intersection.building?.ownerPlayerId !== playerId || !intersection.harborAccess) {
+      continue;
+    }
+
+    if (intersection.harborAccess === `${resourceType}_2_to_1`) {
+      return 2;
+    }
+
+    if (intersection.harborAccess === "generic_3_to_1") {
+      hasGenericHarbor = true;
+    }
+  }
+
+  return hasGenericHarbor ? 3 : 4;
 }
 
 function resolveSevenPhase(players: MatchPlayerState[]): TurnState["phase"] {
@@ -827,22 +1523,37 @@ function requireBoard(match: MatchState) {
   };
 }
 
+function requirePlayers(match: MatchState) {
+  if (!match.players) {
+    throw new MatchEngineError("MATCH_NOT_IN_PROGRESS", "Player state is missing.");
+  }
+
+  return {
+    players: match.players,
+  };
+}
+
 function ensureActivePlayer(turn: TurnState, actorPlayerId: string): void {
   if (turn.activePlayerId !== actorPlayerId) {
     throw new MatchEngineError("NOT_ACTIVE_PLAYER", "Only the active player may perform this command.");
   }
 }
 
-function ensureTurnPhase(turn: TurnState, expectedPhase: TurnState["phase"]): void {
-  if (turn.phase !== expectedPhase) {
+function ensureTurnPhase(turn: TurnState, expectedPhase: TurnState["phase"] | TurnState["phase"][]): void {
+  const expected = Array.isArray(expectedPhase) ? expectedPhase : [expectedPhase];
+  if (!expected.includes(turn.phase)) {
     throw new MatchEngineError(
       "INVALID_TURN_PHASE",
-      `Command requires turn phase ${expectedPhase}, received ${turn.phase}.`,
+      `Command requires turn phase ${expected.join(" or ")}, received ${turn.phase}.`,
     );
   }
 }
 
 const RESOURCE_TYPES: ResourceType[] = ["wood", "brick", "sheep", "wheat", "ore"];
+
+function nonZeroResourceTypes(resources: ResourceCounts): ResourceType[] {
+  return RESOURCE_TYPES.filter((resourceType) => resources[resourceType] > 0);
+}
 
 function normalizeResourceCounts(resources: Partial<ResourceCounts>): ResourceCounts {
   return {

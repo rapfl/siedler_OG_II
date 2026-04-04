@@ -3,6 +3,7 @@ import type {
   BoardHarbor,
   BoardHex,
   BoardIntersection,
+  DevelopmentCardType,
   GeneratedBoard,
   HarborType,
   MatchPlayerState,
@@ -65,6 +66,33 @@ const HARBOR_DISTRIBUTION: HarborType[] = [
   "ore_2_to_1",
 ];
 const HARBOR_SLOT_INDICES = [0, 3, 6, 10, 13, 17, 20, 23, 27] as const;
+const DEVELOPMENT_CARD_DISTRIBUTION: DevelopmentCardType[] = [
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "knight",
+  "victory_point",
+  "victory_point",
+  "victory_point",
+  "victory_point",
+  "victory_point",
+  "year_of_plenty",
+  "year_of_plenty",
+  "monopoly",
+  "monopoly",
+  "road_building",
+  "road_building",
+];
 const CUBE_CORNER_OFFSETS = [
   [2, -1, -1],
   [1, 1, -2],
@@ -209,6 +237,7 @@ export function initializeMatchSetup(match: MatchState): MatchState {
     resources: emptyResourceCounts(),
     initialSettlementIntersectionIds: [],
     initialRoadEdgeIds: [],
+    developmentCards: emptyDevelopmentCardCounts(),
   }));
 
   return {
@@ -217,6 +246,7 @@ export function initializeMatchSetup(match: MatchState): MatchState {
     board,
     players,
     rngState: xmur3(`${match.seed}:turn-rng`)(),
+    developmentDeck: shuffle([...DEVELOPMENT_CARD_DISTRIBUTION], createRng(`${match.seed}:dev-cards`)),
     longestRoadLength: 0,
     setup: {
       step: "setup_forward_settlement",
@@ -383,8 +413,9 @@ function finalizeSetup(match: MatchState): MatchState {
     },
     turn: {
       activePlayerId: setup.placementOrder[0]!,
-      phase: "roll_pending",
+      phase: "pre_roll_devcard_window",
       turnNumber: 1,
+      hasPlayedDevCardThisTurn: false,
     },
     version: match.version + 1,
   };
@@ -679,6 +710,16 @@ export function emptyResourceCounts(): ResourceCounts {
     sheep: 0,
     wheat: 0,
     ore: 0,
+  };
+}
+
+export function emptyDevelopmentCardCounts() {
+  return {
+    knight: 0,
+    victory_point: 0,
+    year_of_plenty: 0,
+    monopoly: 0,
+    road_building: 0,
   };
 }
 
