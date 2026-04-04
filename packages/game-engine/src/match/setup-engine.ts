@@ -65,7 +65,6 @@ const HARBOR_DISTRIBUTION: HarborType[] = [
   "wheat_2_to_1",
   "ore_2_to_1",
 ];
-const HARBOR_SLOT_INDICES = [0, 3, 6, 10, 13, 17, 20, 23, 27] as const;
 const DEVELOPMENT_CARD_DISTRIBUTION: DevelopmentCardType[] = [
   "knight",
   "knight",
@@ -655,10 +654,7 @@ function buildBoardTemplate(): BoardTemplate {
       return Math.atan2(leftMidpoint.y, leftMidpoint.x) - Math.atan2(rightMidpoint.y, rightMidpoint.x);
     });
 
-  const harborSlots = HARBOR_SLOT_INDICES.map((index) => {
-    const edge = coastalEdges[index]!;
-    return [edge.intersectionAId, edge.intersectionBId] as [string, string];
-  });
+  const harborSlots = buildHarborSlots(coastalEdges);
 
   return {
     hexOrder,
@@ -671,6 +667,22 @@ function buildBoardTemplate(): BoardTemplate {
     edges,
     harborSlots,
   };
+}
+
+function buildHarborSlots(coastalEdges: BoardEdge[]): Array<[string, string]> {
+  const step = 3;
+  const harborCount = HARBOR_DISTRIBUTION.length;
+
+  for (let startIndex = 0; startIndex < coastalEdges.length; startIndex += 1) {
+    const candidateEdges = Array.from({ length: harborCount }, (_, index) => coastalEdges[(startIndex + index * step) % coastalEdges.length]!);
+    const intersectionIds = candidateEdges.flatMap((edge) => [edge.intersectionAId, edge.intersectionBId]);
+
+    if (new Set(intersectionIds).size === intersectionIds.length) {
+      return candidateEdges.map((edge) => [edge.intersectionAId, edge.intersectionBId] as [string, string]);
+    }
+  }
+
+  throw new Error("Unable to derive non-overlapping harbor slots from the coastal edge ring.");
 }
 
 function hasInvalidHighTokenAdjacency(terrainOrder: TerrainType[], tokenOrder: readonly number[]): boolean {

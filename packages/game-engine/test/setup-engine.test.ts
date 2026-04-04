@@ -55,6 +55,15 @@ function createReadyRoom(playerCount: 3 | 4) {
 }
 
 describe("setup engine", () => {
+  it("generates the same board for the same seed and changes for a different seed", () => {
+    const boardA = generateBoard("seed-repeatable");
+    const boardB = generateBoard("seed-repeatable");
+    const boardC = generateBoard("seed-different");
+
+    expect(boardA).toEqual(boardB);
+    expect(boardC).not.toEqual(boardA);
+  });
+
   it("generates a seeded base-game board with the expected topology and fair high tokens", () => {
     const board = generateBoard("seed-a");
 
@@ -80,6 +89,127 @@ describe("setup engine", () => {
     });
 
     expect(invalidHighAdjacency).toBe(false);
+  });
+
+  it("matches the base-game terrain, token, harbor, and robber invariants", () => {
+    const board = generateBoard("seed-invariants");
+
+    const terrainCounts = Object.values(board.hexes).reduce<Record<string, number>>((counts, hex) => {
+      counts[hex.resourceType] = (counts[hex.resourceType] ?? 0) + 1;
+      return counts;
+    }, {});
+
+    expect(terrainCounts).toMatchObject({
+      wood: 4,
+      sheep: 4,
+      wheat: 4,
+      brick: 3,
+      ore: 3,
+      desert: 1,
+    });
+
+    const tokenCounts = Object.values(board.hexes).reduce<Record<number, number>>((counts, hex) => {
+      if (hex.tokenNumber !== undefined) {
+        counts[hex.tokenNumber] = (counts[hex.tokenNumber] ?? 0) + 1;
+      }
+      return counts;
+    }, {});
+
+    expect(tokenCounts).toEqual({
+      2: 1,
+      3: 2,
+      4: 2,
+      5: 2,
+      6: 2,
+      8: 2,
+      9: 2,
+      10: 2,
+      11: 2,
+      12: 1,
+    });
+
+    const harborCounts = Object.values(board.harbors).reduce<Record<string, number>>((counts, harbor) => {
+      counts[harbor.harborType] = (counts[harbor.harborType] ?? 0) + 1;
+      return counts;
+    }, {});
+
+    expect(harborCounts).toMatchObject({
+      generic_3_to_1: 4,
+      wood_2_to_1: 1,
+      brick_2_to_1: 1,
+      sheep_2_to_1: 1,
+      wheat_2_to_1: 1,
+      ore_2_to_1: 1,
+    });
+
+    const robberHexes = Object.values(board.hexes).filter((hex) => hex.hasRobber);
+    expect(robberHexes).toHaveLength(1);
+    expect(robberHexes[0]?.hexId).toBe(board.robberHexId);
+    expect(robberHexes[0]?.resourceType).toBe("desert");
+  });
+
+  it("keeps board topology and harbor access references internally consistent", () => {
+    const board = generateBoard("seed-graph");
+
+    for (const hex of Object.values(board.hexes)) {
+      expect(hex.adjacentIntersectionIds).toHaveLength(6);
+      expect(hex.adjacentEdgeIds).toHaveLength(6);
+
+      for (const adjacentHexId of hex.adjacentHexIds) {
+        expect(board.hexes[adjacentHexId]?.adjacentHexIds).toContain(hex.hexId);
+      }
+
+      for (const intersectionId of hex.adjacentIntersectionIds) {
+        expect(board.intersections[intersectionId]?.adjacentHexIds).toContain(hex.hexId);
+      }
+
+      for (const edgeId of hex.adjacentEdgeIds) {
+        expect(board.edges[edgeId]?.adjacentHexIds).toContain(hex.hexId);
+      }
+    }
+
+    for (const intersection of Object.values(board.intersections)) {
+      expect(intersection.adjacentHexIds.length).toBeGreaterThanOrEqual(1);
+      expect(intersection.adjacentHexIds.length).toBeLessThanOrEqual(3);
+      expect(intersection.adjacentEdgeIds.length).toBeGreaterThanOrEqual(2);
+      expect(intersection.adjacentEdgeIds.length).toBeLessThanOrEqual(3);
+      expect(intersection.adjacentIntersectionIds.length).toBe(intersection.adjacentEdgeIds.length);
+
+      for (const adjacentIntersectionId of intersection.adjacentIntersectionIds) {
+        expect(board.intersections[adjacentIntersectionId]?.adjacentIntersectionIds).toContain(intersection.intersectionId);
+      }
+
+      for (const edgeId of intersection.adjacentEdgeIds) {
+        const edge = board.edges[edgeId];
+        expect(edge).toBeDefined();
+        expect(
+          edge?.intersectionAId === intersection.intersectionId || edge?.intersectionBId === intersection.intersectionId,
+        ).toBe(true);
+      }
+    }
+
+    for (const edge of Object.values(board.edges)) {
+      expect(board.intersections[edge.intersectionAId]).toBeDefined();
+      expect(board.intersections[edge.intersectionBId]).toBeDefined();
+      expect(edge.adjacentHexIds.length).toBeGreaterThanOrEqual(1);
+      expect(edge.adjacentHexIds.length).toBeLessThanOrEqual(2);
+    }
+
+    const harborIntersectionIds = new Set<string>();
+    for (const harbor of Object.values(board.harbors)) {
+      expect(harbor.intersectionIds).toHaveLength(2);
+      for (const intersectionId of harbor.intersectionIds) {
+        harborIntersectionIds.add(intersectionId);
+        expect(board.intersections[intersectionId]?.harborAccess).toBe(harbor.harborType);
+      }
+    }
+
+    const intersectionsWithHarborAccess = Object.values(board.intersections)
+      .filter((intersection) => intersection.harborAccess !== undefined)
+      .map((intersection) => intersection.intersectionId);
+
+    expect(intersectionsWithHarborAccess).toHaveLength(18);
+    expect(new Set(intersectionsWithHarborAccess)).toEqual(harborIntersectionIds);
   });
 
   it("runs a full 4-player setup and distributes start resources from the second settlement", () => {

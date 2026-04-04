@@ -169,43 +169,72 @@ export function MatchScreen({ matchId }: { matchId: string }) {
         </div>
       }
     >
-      <div className="players-strip">
-        {players.map((player) => (
-          <article
-            key={player.playerId}
-            className={`player-chip ${player.isSelf ? "player-chip-self" : ""} ${player.isActive ? "player-chip-active" : ""}`}
-          >
-            <div className="player-chip-top">
-              <span className={`player-swatch ${playerColorToken(player.color)}`} />
-              <div>
-                <p className="player-name">
-                  {player.displayName}
-                  {player.isHost ? <span className="micro-tag">HOST</span> : null}
-                </p>
-                <p className="player-meta">Seat {player.turnOrder + 1}</p>
+      <div className="table-stage">
+        <div className="players-strip players-strip-floating">
+          {players.map((player) => (
+            <article
+              key={player.playerId}
+              className={`player-chip ${player.isSelf ? "player-chip-self" : ""} ${player.isActive ? "player-chip-active" : ""}`}
+            >
+              <div className="player-chip-top">
+                <span className={`player-swatch ${playerColorToken(player.color)}`} />
+                <div>
+                  <p className="player-name">
+                    {player.displayName}
+                    {player.isHost ? <span className="micro-tag">HOST</span> : null}
+                  </p>
+                  <p className="player-meta">Seat {player.turnOrder + 1}</p>
+                </div>
               </div>
-            </div>
-            <div className="player-chip-stats">
-              <span className="micro-stat">{player.visiblePoints} VP</span>
-              <span className="micro-stat">{player.resourceCardCount} Karten</span>
-              <span className="micro-stat">{player.developmentCardCount} Dev</span>
-              <span className="micro-stat">{player.playedKnightCount} Knight</span>
-            </div>
-            <p className="player-status">{playerStatusText(player)}</p>
-          </article>
-        ))}
-      </div>
+              <div className="player-chip-stats">
+                <span className="micro-stat">{player.visiblePoints} VP</span>
+                <span className="micro-stat">{player.resourceCardCount} Karten</span>
+                <span className="micro-stat">{player.developmentCardCount} Dev</span>
+                <span className="micro-stat">{player.playedKnightCount} Knight</span>
+              </div>
+              <p className="player-status">{playerStatusText(player)}</p>
+            </article>
+          ))}
+        </div>
 
-      <div className="match-layout">
-        <section className="match-main">
-          <div className={`hero-panel ${match.actionContext?.tone ? `tone-${match.actionContext.tone}` : "tone-neutral"}`}>
-            <div>
-              <p className="eyebrow">Action Context</p>
-              <h1 className="display-title hero-title">{primaryAction}</h1>
-              <p className="hero-copy">
-                {match.actionContext?.description ?? "Waehle rechts eine Aktion und fuehre sie direkt ueber das Brett oder die Handkarten aus."}
-              </p>
-            </div>
+        <div className="table-board-wrap">
+          <GameBoard
+            board={board}
+            room={room}
+            match={match}
+            mode={boardMode}
+            onHexSelect={(hexId) => {
+              if (boardMode === "MOVE_ROBBER") {
+                void submit(client, match, "MOVE_ROBBER", { targetHexId: hexId });
+              }
+            }}
+            onIntersectionSelect={(intersectionId) => {
+              if (boardMode === "PLACE_INITIAL_SETTLEMENT") {
+                void submit(client, match, "PLACE_INITIAL_SETTLEMENT", { intersectionId });
+              }
+              if (boardMode === "BUILD_SETTLEMENT") {
+                void submit(client, match, "BUILD_SETTLEMENT", { intersectionId });
+              }
+              if (boardMode === "UPGRADE_CITY") {
+                void submit(client, match, "UPGRADE_CITY", { intersectionId });
+              }
+            }}
+            onEdgeSelect={(edgeId) => {
+              if (boardMode === "PLACE_INITIAL_ROAD") {
+                void submit(client, match, "PLACE_INITIAL_ROAD", { edgeId });
+              }
+              if (boardMode === "BUILD_ROAD") {
+                void submit(client, match, "BUILD_ROAD", { edgeId });
+              }
+            }}
+          />
+
+          <section className={`table-overlay hero-overlay ${match.actionContext?.tone ? `tone-${match.actionContext.tone}` : "tone-neutral"}`}>
+            <p className="eyebrow">Action Context</p>
+            <h1 className="display-title hero-title">{primaryAction}</h1>
+            <p className="hero-copy">
+              {match.actionContext?.description ?? "Das Brett bleibt sichtbar. Aktionen laufen als Overlays und direkte Brettauswahl."}
+            </p>
             <div className="hero-stats">
               <span className="hero-pill">Aktiver Spieler: {players.find((player) => player.isActive)?.displayName ?? "n/a"}</span>
               <span className="hero-pill">Letzter Wurf: {match.lastRoll ?? "noch keiner"}</span>
@@ -214,137 +243,9 @@ export function MatchScreen({ matchId }: { matchId: string }) {
               </span>
               <span className="hero-pill">Versteckte VP: {match.ownHiddenPoints ?? 0}</span>
             </div>
-          </div>
+          </section>
 
-          <div className="board-card">
-            <div className="section-header">
-              <div>
-                <p className="eyebrow">Board</p>
-                <h2 className="section-title">
-                  {boardMode ? `${actionLabel(boardMode)} auf dem Brett auswaehlen` : "Direkte Brettinteraktion"}
-                </h2>
-              </div>
-              <div className="section-meta">
-                {boardMode ? <span className="badge status-warning">Board Mode: {actionLabel(boardMode)}</span> : <span className="badge status-muted">Freie Ansicht</span>}
-                <span className="badge">Longest Road: {players.find((player) => player.playerId === match.longestRoadHolderPlayerId)?.displayName ?? "frei"}</span>
-                <span className="badge">Largest Army: {players.find((player) => player.playerId === match.largestArmyHolderPlayerId)?.displayName ?? "frei"}</span>
-              </div>
-            </div>
-
-            <GameBoard
-              board={board}
-              room={room}
-              match={match}
-              mode={boardMode}
-              onHexSelect={(hexId) => {
-                if (boardMode === "MOVE_ROBBER") {
-                  void submit(client, match, "MOVE_ROBBER", { targetHexId: hexId });
-                }
-              }}
-              onIntersectionSelect={(intersectionId) => {
-                if (boardMode === "PLACE_INITIAL_SETTLEMENT") {
-                  void submit(client, match, "PLACE_INITIAL_SETTLEMENT", { intersectionId });
-                }
-                if (boardMode === "BUILD_SETTLEMENT") {
-                  void submit(client, match, "BUILD_SETTLEMENT", { intersectionId });
-                }
-                if (boardMode === "UPGRADE_CITY") {
-                  void submit(client, match, "UPGRADE_CITY", { intersectionId });
-                }
-              }}
-              onEdgeSelect={(edgeId) => {
-                if (boardMode === "PLACE_INITIAL_ROAD") {
-                  void submit(client, match, "PLACE_INITIAL_ROAD", { edgeId });
-                }
-                if (boardMode === "BUILD_ROAD") {
-                  void submit(client, match, "BUILD_ROAD", { edgeId });
-                }
-              }}
-            />
-          </div>
-
-          <div className="two-column-grid">
-            <section className="panel match-subpanel">
-              <div className="section-header compact">
-                <div>
-                  <p className="eyebrow">Production & Costs</p>
-                  <h2 className="section-title">Baukosten und Hafenvorteile</h2>
-                </div>
-              </div>
-              <div className="cost-grid">
-                {BUILD_COSTS.map((entry) => (
-                  <div key={entry.title} className="cost-card">
-                    <p className="cost-title">{entry.title}</p>
-                    <div className="cost-row">
-                      {RESOURCE_TYPES.map((resource) => {
-                        const amount = entry.cost[resource] ?? 0;
-                        if (!amount) {
-                          return null;
-                        }
-                        return (
-                          <span key={`${entry.title}-${resource}`} className="micro-stat">
-                            {resourceLabel(resource)} x{amount}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-                <div className="cost-card">
-                  <p className="cost-title">Bank / Hafen</p>
-                  <div className="cost-row">
-                    {RESOURCE_TYPES.map((resource) => (
-                      <span key={resource} className="micro-stat">
-                        {resourceLabel(resource)} {tradeRatios[resource]}:1
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="panel match-subpanel">
-              <div className="section-header compact">
-                <div>
-                  <p className="eyebrow">Event Log</p>
-                  <h2 className="section-title">Spielverlauf</h2>
-                </div>
-              </div>
-              <div className="event-stack">
-                {snapshot.eventLog.length === 0 ? (
-                  <p className="subtle-copy">Noch keine Ereignisse in dieser Session.</p>
-                ) : (
-                  snapshot.eventLog
-                    .slice()
-                    .reverse()
-                    .map((message, index) => (
-                      <div key={`${message.type}-${index}`} className="event-row">
-                        <AssetToken
-                          asset={
-                            message.type === "server.command_rejected"
-                              ? "state_forced_action"
-                              : message.type === "server.lifecycle_transition"
-                                ? "log_victory"
-                                : message.type === "server.match_snapshot"
-                                  ? "log_dice_roll"
-                                  : message.type === "server.room_updated"
-                                    ? "status_ready"
-                                    : "log_build"
-                          }
-                          tone={message.type === "server.command_rejected" ? "danger" : "paper"}
-                          size="sm"
-                        />
-                        <p>{summarizeLogEntry(message)}</p>
-                      </div>
-                    ))
-                )}
-              </div>
-            </section>
-          </div>
-        </section>
-
-        <aside className="command-rail">
-          <section className="panel rail-panel">
+          <aside className="table-overlay action-hud">
             <p className="eyebrow">Turn Rail</p>
             <div className="rail-actions">
               <ActionButton label={actionLabel("ROLL_DICE")} enabled={match.allowedActions?.includes("ROLL_DICE") ?? false} onClick={() => void submit(client, match, "ROLL_DICE", {})} />
@@ -369,45 +270,53 @@ export function MatchScreen({ matchId }: { matchId: string }) {
               />
               <ActionButton label={actionLabel("END_TURN")} enabled={match.allowedActions?.includes("END_TURN") ?? false} onClick={() => void submit(client, match, "END_TURN", {})} />
             </div>
-          </section>
-
-          <section className="panel rail-panel">
-            <p className="eyebrow">Own Hand</p>
-            <div className="resource-grid">
-              {resourceEntries(match.ownResources).map((resource) => (
-                <div key={resource.type} className="resource-card">
-                  <AssetToken asset={`resource_${resource.type}` as const} tone="paper" />
-                  <div>
-                    <p className="resource-card-title">{resource.label}</p>
-                    <p className="resource-card-count">{resource.count}</p>
-                  </div>
-                </div>
-              ))}
+            <div className="section-meta hud-meta">
+              {boardMode ? <span className="badge status-warning">Board Mode: {actionLabel(boardMode)}</span> : <span className="badge status-muted">Freie Ansicht</span>}
+              <span className="badge">Longest Road: {players.find((player) => player.playerId === match.longestRoadHolderPlayerId)?.displayName ?? "frei"}</span>
+              <span className="badge">Largest Army: {players.find((player) => player.playerId === match.largestArmyHolderPlayerId)?.displayName ?? "frei"}</span>
             </div>
-            {requiredAction === "DISCARD_RESOURCES" ? (
-              <div className="rail-block danger-block">
-                <div className="section-header compact">
-                  <div>
-                    <p className="eyebrow">Discard</p>
-                    <h2 className="section-title">Genau {match.requiredDiscardCount ?? 0} Karten abwerfen</h2>
-                  </div>
-                  <span className={`badge ${discardRemaining === 0 ? "status-success" : "status-warning"}`}>
-                    Rest: {discardRemaining}
-                  </span>
-                </div>
-                <ResourceEditor resources={discardResources} onChange={setDiscardResources} />
-                <button
-                  className="action-button danger-button"
-                  disabled={discardRemaining !== 0}
-                  onClick={() => void submit(client, match, "DISCARD_RESOURCES", { resources: discardResources })}
-                >
-                  Discard bestaetigen
-                </button>
-              </div>
-            ) : null}
-          </section>
+          </aside>
 
-          <section className="panel rail-panel">
+          <section className="table-overlay side-hud">
+            <div className="panel rail-panel compact-panel">
+              <p className="eyebrow">Live Status</p>
+              <div className="rail-block">
+                <div className="status-grid">
+                  <span className="micro-stat">Ich: {selfPlayer?.displayName ?? match.playerId}</span>
+                  <span className="micro-stat">Longest Road: {match.longestRoadLength ?? 0}</span>
+                  <span className="micro-stat">Largest Army: {match.largestArmySize ?? 0}</span>
+                </div>
+                {requiredAction === "STEAL_RESOURCE" ? (
+                  <div className="choice-row">
+                    {(match.stealablePlayerIds ?? []).map((playerId) => (
+                      <button key={playerId} className="secondary-button small-button" onClick={() => void submit(client, match, "STEAL_RESOURCE", { victimPlayerId: playerId })}>
+                        {players.find((player) => player.playerId === playerId)?.displayName ?? playerId}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {snapshot.lastRejected ? (
+                  <div className="inline-warning">
+                    <strong>{snapshot.lastRejected.reasonCode}</strong>: {snapshot.lastRejected.message}
+                  </div>
+                ) : null}
+                <div className="cluster">
+                  <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
+                    Reattach
+                  </button>
+                  {client.supportsSandboxTools() ? (
+                    <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
+                      Sandbox sync
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div className="table-lower-grid">
+          <section className="panel rail-panel match-subpanel">
             <p className="eyebrow">Development Cards</p>
             <div className="devcard-stack">
               {developmentCardEntries(match.ownDevelopmentCards).map((card) => (
@@ -449,7 +358,7 @@ export function MatchScreen({ matchId }: { matchId: string }) {
             </div>
           </section>
 
-          <section className="panel rail-panel">
+          <section className="panel rail-panel match-subpanel">
             <p className="eyebrow">Trading</p>
             <div className="rail-block">
               <div className="section-header compact">
@@ -544,41 +453,128 @@ export function MatchScreen({ matchId }: { matchId: string }) {
             </div>
           </section>
 
-          <section className="panel rail-panel">
-            <p className="eyebrow">Live Status</p>
-            <div className="rail-block">
-              <div className="status-grid">
-                <span className="micro-stat">Ich: {selfPlayer?.displayName ?? match.playerId}</span>
-                <span className="micro-stat">Longest Road: {match.longestRoadLength ?? 0}</span>
-                <span className="micro-stat">Largest Army: {match.largestArmySize ?? 0}</span>
+          <section className="panel match-subpanel">
+            <div className="section-header compact">
+              <div>
+                <p className="eyebrow">Production & Costs</p>
+                <h2 className="section-title">Baukosten und Hafenvorteile</h2>
               </div>
-              {requiredAction === "STEAL_RESOURCE" ? (
-                <div className="choice-row">
-                  {(match.stealablePlayerIds ?? []).map((playerId) => (
-                    <button key={playerId} className="secondary-button small-button" onClick={() => void submit(client, match, "STEAL_RESOURCE", { victimPlayerId: playerId })}>
-                      {players.find((player) => player.playerId === playerId)?.displayName ?? playerId}
-                    </button>
+            </div>
+            <div className="cost-grid">
+              {BUILD_COSTS.map((entry) => (
+                <div key={entry.title} className="cost-card">
+                  <p className="cost-title">{entry.title}</p>
+                  <div className="cost-row">
+                    {RESOURCE_TYPES.map((resource) => {
+                      const amount = entry.cost[resource] ?? 0;
+                      if (!amount) {
+                        return null;
+                      }
+                      return (
+                        <span key={`${entry.title}-${resource}`} className="micro-stat">
+                          {resourceLabel(resource)} x{amount}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              <div className="cost-card">
+                <p className="cost-title">Bank / Hafen</p>
+                <div className="cost-row">
+                  {RESOURCE_TYPES.map((resource) => (
+                    <span key={resource} className="micro-stat">
+                      {resourceLabel(resource)} {tradeRatios[resource]}:1
+                    </span>
                   ))}
                 </div>
-              ) : null}
-              {snapshot.lastRejected ? (
-                <div className="inline-warning">
-                  <strong>{snapshot.lastRejected.reasonCode}</strong>: {snapshot.lastRejected.message}
-                </div>
-              ) : null}
-              <div className="cluster">
-                <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
-                  Reattach
-                </button>
-                {client.supportsSandboxTools() ? (
-                  <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
-                    Sandbox sync
-                  </button>
-                ) : null}
               </div>
             </div>
           </section>
-        </aside>
+
+          <section className="panel match-subpanel">
+            <div className="section-header compact">
+              <div>
+                <p className="eyebrow">Event Log</p>
+                <h2 className="section-title">Spielverlauf</h2>
+              </div>
+            </div>
+            <div className="event-stack">
+              {snapshot.eventLog.length === 0 ? (
+                <p className="subtle-copy">Noch keine Ereignisse in dieser Session.</p>
+              ) : (
+                snapshot.eventLog
+                  .slice()
+                  .reverse()
+                  .map((message, index) => (
+                    <div key={`${message.type}-${index}`} className="event-row">
+                      <AssetToken
+                        asset={
+                          message.type === "server.command_rejected"
+                            ? "state_forced_action"
+                            : message.type === "server.lifecycle_transition"
+                              ? "log_victory"
+                              : message.type === "server.match_snapshot"
+                                ? "log_dice_roll"
+                                : message.type === "server.room_updated"
+                                  ? "status_ready"
+                                  : "log_build"
+                        }
+                        tone={message.type === "server.command_rejected" ? "danger" : "paper"}
+                        size="sm"
+                      />
+                      <p>{summarizeLogEntry(message)}</p>
+                    </div>
+                  ))
+              )}
+            </div>
+          </section>
+        </div>
+
+        <section className="hand-tray">
+          <div className="hand-tray-header">
+            <div>
+              <p className="eyebrow">Own Hand</p>
+              <h2 className="section-title">Karten immer im Blick</h2>
+            </div>
+            {requiredAction === "DISCARD_RESOURCES" ? (
+              <span className={`badge ${discardRemaining === 0 ? "status-success" : "status-warning"}`}>
+                Discard Rest: {discardRemaining}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="hand-tray-scroll">
+            {resourceEntries(match.ownResources).map((resource) => (
+              <div key={resource.type} className="resource-card hand-card">
+                <AssetToken asset={`resource_${resource.type}` as const} tone="paper" />
+                <div>
+                  <p className="resource-card-title">{resource.label}</p>
+                  <p className="resource-card-count">{resource.count}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {requiredAction === "DISCARD_RESOURCES" ? (
+            <div className="rail-block danger-block hand-editor">
+              <div className="section-header compact">
+                <div>
+                  <p className="eyebrow">Discard</p>
+                  <h2 className="section-title">Genau {match.requiredDiscardCount ?? 0} Karten abwerfen</h2>
+                </div>
+              </div>
+              <ResourceEditor resources={discardResources} onChange={setDiscardResources} />
+              <button
+                className="action-button danger-button"
+                disabled={discardRemaining !== 0}
+                onClick={() => void submit(client, match, "DISCARD_RESOURCES", { resources: discardResources })}
+              >
+                Discard bestaetigen
+              </button>
+            </div>
+          ) : null}
+        </section>
       </div>
     </AppShell>
   );
