@@ -8,12 +8,12 @@ import { GameBoard } from "../../components/game-board";
 import { AppShell } from "../../components/shell";
 import { AssetToken } from "../../lib/assets/manifest";
 import { useRealtimeSnapshot } from "../../lib/realtime/use-realtime";
+import { requiredActionPanel, requiredActionSurface, type MatchUtilityPanel } from "../../lib/ui/match-required-action";
 import { createMatchScreenModel, developmentCardEntries, isBoardAction, sumResources } from "../../lib/ui/match-screen-model";
 import { resourceEntries, resourceLabel, summarizeLogEntry } from "../../lib/ui/view-model";
 import { useRouteBodyClass } from "../../lib/ui/use-route-body-class";
 import type { MatchCommandType, MatchView, ResourceCounts, ResourceType } from "@siedler/shared-types";
 
-type UtilityPanel = "trade" | "dev" | "log" | "tools" | null;
 type BuildMode = "ROAD" | "SETTLEMENT" | "CITY" | null;
 
 const RESOURCE_TYPES: ResourceType[] = ["wood", "brick", "sheep", "wheat", "ore"];
@@ -59,7 +59,7 @@ export function MatchScreen({ matchId }: { matchId: string }) {
 
   const { client, session, snapshot } = useRealtimeSnapshot();
   const [selectedBoardAction, setSelectedBoardAction] = useState<MatchCommandType>();
-  const [activeUtility, setActiveUtility] = useState<UtilityPanel>(null);
+  const [activeUtility, setActiveUtility] = useState<MatchUtilityPanel>(null);
   const [buildMode, setBuildMode] = useState<BuildMode>(null);
   const [tradeGive, setTradeGive] = useState<ResourceCounts>(emptyResources());
   const [tradeWant, setTradeWant] = useState<ResourceCounts>(emptyResources());
@@ -97,6 +97,19 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   }, [match?.matchId, match?.matchVersion, match?.allowedActions, model?.requiredAction, match]);
 
   useEffect(() => {
+    const forcedPanel = requiredActionPanel(model?.requiredAction);
+    if (forcedPanel !== null) {
+      setActiveUtility(forcedPanel);
+      return;
+    }
+
+    const forcedSurface = requiredActionSurface(model?.requiredAction);
+    if ((forcedSurface === "board" || forcedSurface === "inline") && activeUtility !== null) {
+      setActiveUtility(null);
+    }
+  }, [activeUtility, model?.requiredAction]);
+
+  useEffect(() => {
     if (!match) {
       setDiscardResources(emptyResources());
     }
@@ -123,6 +136,7 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const boardMode = isBoardAction(model.requiredAction) ? model.requiredAction : selectedBoardAction;
   const activeTradeId = match.tradeOffer?.tradeId;
   const acceptedCounterpartyPlayerId = match.tradeOffer?.acceptedPlayerIds[0];
+  const forcedSurface = requiredActionSurface(model.requiredAction);
 
   const toggleBuildSelection = (nextMode: BuildMode, nextAction: Extract<MatchCommandType, "BUILD_ROAD" | "BUILD_SETTLEMENT" | "UPGRADE_CITY">) => {
     const shouldClear = buildMode === nextMode && selectedBoardAction === nextAction;
@@ -187,10 +201,10 @@ export function MatchScreen({ matchId }: { matchId: string }) {
           </div>
 
           <section className="match-board-stage">
-            <div className="match-board-heading">
-              <div>
-                <p className="eyebrow">Action Context</p>
-                <h1 className="display-title match-stage-title">{model.primaryAction}</h1>
+              <div className="match-board-heading">
+                <div>
+                  <p className="eyebrow">Action Context</p>
+                  <h1 className="display-title match-stage-title">{model.primaryAction}</h1>
                 <p className="subtle-copy">
                   {model.primaryDescription}
                   {hoverTarget ? ` Aktuell: ${hoverTarget}.` : ""}
@@ -202,6 +216,17 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                 <span className="hero-pill">Versteckte VP: {match.ownHiddenPoints ?? 0}</span>
               </div>
             </div>
+
+            {forcedSurface === "inline" || forcedSurface === "trade" || forcedSurface === "dev" ? (
+              <ForcedActionStrip
+                match={match}
+                model={model}
+                discardRemaining={discardRemaining}
+                discardResources={discardResources}
+                onDiscardResourcesChange={setDiscardResources}
+                onSubmit={(commandType, payload) => void submit(client, match, commandType, payload)}
+              />
+            ) : null}
 
             <div className="match-board-frame">
               <GameBoard
@@ -517,19 +542,29 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                       match.allowedActions?.includes("UPGRADE_CITY") ||
                       model.requiredAction === "PLACE_INITIAL_SETTLEMENT" ||
                       model.requiredAction === "PLACE_INITIAL_ROAD"
-                    )
+                    ) || forcedSurface === "trade" || forcedSurface === "dev" || forcedSurface === "inline"
                   }
                   onClick={() => {
                     setBuildMode((current) => (current ? null : "ROAD"));
                     setActiveUtility(null);
                   }}
                 />
-                <DockButton label="Trade" active={activeUtility === "trade"} onClick={() => setActiveUtility((current) => (current === "trade" ? null : "trade"))} />
-                <DockButton label="Dev" active={activeUtility === "dev"} onClick={() => setActiveUtility((current) => (current === "dev" ? null : "dev"))} />
+                <DockButton
+                  label="Trade"
+                  active={activeUtility === "trade"}
+                  disabled={forcedSurface === "dev" || forcedSurface === "inline"}
+                  onClick={() => setActiveUtility((current) => (current === "trade" ? null : "trade"))}
+                />
+                <DockButton
+                  label="Dev"
+                  active={activeUtility === "dev"}
+                  disabled={forcedSurface === "trade" || forcedSurface === "inline"}
+                  onClick={() => setActiveUtility((current) => (current === "dev" ? null : "dev"))}
+                />
                 <DockButton
                   label="End"
                   active={false}
-                  disabled={!(match.allowedActions?.includes("END_TURN") ?? false)}
+                  disabled={!(match.allowedActions?.includes("END_TURN") ?? false) || forcedSurface !== null}
                   onClick={() => void submit(client, match, "END_TURN", {})}
                 />
               </div>
@@ -582,25 +617,6 @@ export function MatchScreen({ matchId }: { matchId: string }) {
               )}
             </div>
 
-            {model.requiredAction === "DISCARD_RESOURCES" ? (
-              <div className="match-required-panel danger-block">
-                <div className="section-header compact">
-                  <div>
-                    <p className="eyebrow">Discard</p>
-                    <h2 className="section-title">Genau {match.requiredDiscardCount ?? 0} Karten abwerfen</h2>
-                  </div>
-                  <span className={`badge ${discardRemaining === 0 ? "status-success" : "status-warning"}`}>Rest: {discardRemaining}</span>
-                </div>
-                <ResourceEditor resources={discardResources} onChange={setDiscardResources} />
-                <button
-                  className="action-button danger-button"
-                  disabled={discardRemaining !== 0}
-                  onClick={() => void submit(client, match, "DISCARD_RESOURCES", { resources: discardResources })}
-                >
-                  Discard bestaetigen
-                </button>
-              </div>
-            ) : null}
           </section>
         </div>
       </ClientErrorBoundary>
@@ -624,6 +640,135 @@ function DockButton({
       {label}
     </button>
   );
+}
+
+function ForcedActionStrip({
+  match,
+  model,
+  discardRemaining,
+  discardResources,
+  onDiscardResourcesChange,
+  onSubmit,
+}: {
+  match: MatchView;
+  model: ReturnType<typeof createMatchScreenModel>;
+  discardRemaining: number;
+  discardResources: ResourceCounts;
+  onDiscardResourcesChange: (next: ResourceCounts) => void;
+  onSubmit: (commandType: MatchCommandType, payload: Record<string, unknown>) => void;
+}) {
+  if (!model) {
+    return null;
+  }
+
+  if (model.requiredAction === "RESPOND_TRADE") {
+    return (
+      <div className="match-required-panel warning-block">
+        <div className="section-header compact">
+          <div>
+            <p className="eyebrow">Pflichtaktion</p>
+            <h2 className="section-title">Auf den Handel reagieren</h2>
+          </div>
+          <span className="badge status-warning">Trade Response</span>
+        </div>
+        <p className="subtle-copy">
+          {match.tradeOffer
+            ? `Gibt ${resourceSummary(match.tradeOffer.offeredResources)} gegen ${resourceSummary(match.tradeOffer.requestedResources)}.`
+            : "Das offene Angebot wartet auf deine Antwort."}
+        </p>
+        <div className="choice-row">
+          <button
+            className="action-button success-button"
+            onClick={() => onSubmit("RESPOND_TRADE", { tradeId: match.tradeOffer?.tradeId, response: "accept" })}
+          >
+            Annehmen
+          </button>
+          <button
+            className="action-button danger-button"
+            onClick={() => onSubmit("RESPOND_TRADE", { tradeId: match.tradeOffer?.tradeId, response: "reject" })}
+          >
+            Ablehnen
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (model.requiredAction === "PICK_YEAR_OF_PLENTY_RESOURCE" || model.requiredAction === "PICK_MONOPOLY_RESOURCE_TYPE") {
+    return (
+      <div className="match-required-panel warning-block">
+        <div className="section-header compact">
+          <div>
+            <p className="eyebrow">Pflichtaktion</p>
+            <h2 className="section-title">
+              {model.requiredAction === "PICK_YEAR_OF_PLENTY_RESOURCE" ? "Ressource fuer Year of Plenty waehlen" : "Monopoly-Ressourcentyp waehlen"}
+            </h2>
+          </div>
+          <span className="badge status-warning">Dev Card</span>
+        </div>
+        <div className="choice-row">
+          {RESOURCE_TYPES.map((resourceType) => (
+            <button
+              key={resourceType}
+              className="secondary-button small-button"
+              onClick={() => onSubmit(model.requiredAction!, { resourceType })}
+            >
+              {resourceLabel(resourceType)}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (model.requiredAction === "STEAL_RESOURCE") {
+    return (
+      <div className="match-required-panel warning-block">
+        <div className="section-header compact">
+          <div>
+            <p className="eyebrow">Pflichtaktion</p>
+            <h2 className="section-title">Zielspieler fuer den Diebstahl waehlen</h2>
+          </div>
+          <span className="badge status-warning">Robber</span>
+        </div>
+        <div className="choice-row">
+          {(match.stealablePlayerIds ?? []).map((playerId) => (
+            <button
+              key={playerId}
+              className="secondary-button small-button"
+              onClick={() => onSubmit("STEAL_RESOURCE", { victimPlayerId: playerId })}
+            >
+              {model.players.find((player) => player.playerId === playerId)?.displayName ?? playerId}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (model.requiredAction === "DISCARD_RESOURCES") {
+    return (
+      <div className="match-required-panel danger-block">
+        <div className="section-header compact">
+          <div>
+            <p className="eyebrow">Discard</p>
+            <h2 className="section-title">Genau {match.requiredDiscardCount ?? 0} Karten abwerfen</h2>
+          </div>
+          <span className={`badge ${discardRemaining === 0 ? "status-success" : "status-warning"}`}>Rest: {discardRemaining}</span>
+        </div>
+        <ResourceEditor resources={discardResources} onChange={onDiscardResourcesChange} />
+        <button
+          className="action-button danger-button"
+          disabled={discardRemaining !== 0}
+          onClick={() => onSubmit("DISCARD_RESOURCES", { resources: discardResources })}
+        >
+          Discard bestaetigen
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function UtilityButton({

@@ -6,24 +6,17 @@ import { useMemo, useState } from "react";
 import { AppShell } from "../../components/shell";
 import { AssetToken } from "../../lib/assets/manifest";
 import { useRealtimeSnapshot } from "../../lib/realtime/use-realtime";
+import { getResumeHref } from "../../lib/realtime/session-state";
 
 export function EntryScreen() {
   const router = useRouter();
-  const { client, session } = useRealtimeSnapshot();
+  const { client, session, snapshot } = useRealtimeSnapshot();
   const [createName, setCreateName] = useState(session?.displayName ?? "");
   const [joinName, setJoinName] = useState(session?.displayName ?? "");
   const [joinCode, setJoinCode] = useState(session?.roomCode ?? "");
   const [playerCount, setPlayerCount] = useState<3 | 4>(4);
   const [error, setError] = useState<string>();
-  const resumeHref = useMemo(() => {
-    if (session?.matchId) {
-      return `/match/${session.matchId}`;
-    }
-    if (session?.roomCode) {
-      return `/room/${session.roomCode}`;
-    }
-    return undefined;
-  }, [session]);
+  const resumeHref = useMemo(() => getResumeHref(session, snapshot.room, snapshot.match), [session, snapshot.room, snapshot.match]);
 
   return (
     <AppShell

@@ -9,6 +9,7 @@ import type {
   ServerMessage,
 } from "@siedler/shared-types";
 import { createBrowserSession, readBrowserSession, type BrowserSessionState, writeBrowserSession } from "../session/storage";
+import { deriveBrowserSessionFromState, reduceAuthoritativeSessionState } from "./session-state";
 
 type Listener = () => void;
 const sandboxEnabled = process.env.NODE_ENV !== "production";
@@ -186,12 +187,48 @@ function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): 
     delete state.lastRejected;
   }
 
-  const nextSession = {
-    ...state.browserSession,
+  const reduced = reduceAuthoritativeSessionState(
+    {
+      browserSession: state.browserSession,
+      ...(state.room ? { room: state.room } : {}),
+      ...(state.match ? { match: state.match } : {}),
+      ...(state.roomCode ? { roomCode: state.roomCode } : {}),
+      ...(state.board ? { board: state.board } : {}),
+    },
+    snapshot,
+  );
+
+  if (reduced.room) {
+    state.room = reduced.room;
+  } else {
+    delete state.room;
+  }
+
+  if (reduced.match) {
+    state.match = reduced.match;
+  } else {
+    delete state.match;
+  }
+
+  if (reduced.roomCode) {
+    state.roomCode = reduced.roomCode;
+  } else {
+    delete state.roomCode;
+  }
+
+  if (reduced.board) {
+    state.board = reduced.board;
+  } else {
+    delete state.board;
+  }
+
+  const nextSession = deriveBrowserSessionFromState({
+    browserSession: state.browserSession,
+    ...(state.room ? { room: state.room } : {}),
+    ...(state.match ? { match: state.match } : {}),
     ...(state.roomCode ? { roomCode: state.roomCode } : {}),
-    ...(state.room ? { roomId: state.room.roomId } : {}),
-    ...(state.match ? { matchId: state.match.matchId } : {}),
-  };
+    ...(state.board ? { board: state.board } : {}),
+  });
   state.browserSession = nextSession;
   state.snapshotCache = {
     ...(state.room ? { room: state.room } : {}),
