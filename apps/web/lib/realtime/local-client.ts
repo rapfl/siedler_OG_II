@@ -1,16 +1,10 @@
 "use client";
 
-import { InMemoryRealtimeService } from "../../../realtime/src/in-memory-realtime-service";
-import { getLegalInitialRoadPlacements, getLegalInitialSettlementPlacements, projectMatchView } from "@siedler/game-engine";
 import type {
   ClientSubmitCommandMessage,
   CommandRejectedMessage,
   GeneratedBoard,
-  MatchPlayerState,
-  MatchState,
   MatchView,
-  ResourceCounts,
-  ResourceType,
   RoomView,
   ServerMessage,
 } from "@siedler/shared-types";
@@ -51,8 +45,6 @@ interface SessionState {
   room?: RoomView;
   match?: MatchView;
   roomCode?: string;
-  roomId?: string;
-  matchId?: string;
   board?: GeneratedBoard;
   eventLog: ServerMessage[];
   lastMessage?: ServerMessage;
@@ -65,11 +57,20 @@ interface MockSeatIdentity {
   displayName: string;
 }
 
-const service = new InMemoryRealtimeService();
+interface ApiRealtimeSnapshot {
+  room?: RoomView;
+  match?: MatchView;
+  board?: GeneratedBoard;
+  roomCode?: string;
+  dispatches: Array<{ sessionId: string; message: ServerMessage }>;
+  lastRejected?: CommandRejectedMessage;
+}
+
 const roomListeners = new Set<Listener>();
 const matchListeners = new Set<Listener>();
 const sessionStates = new Map<string, SessionState>();
-const mockSeatsByRoomId = new Map<string, MockSeatIdentity[]>();
+const mockSeatsByRoomCode = new Map<string, MockSeatIdentity[]>();
+let pollHandle: number | undefined;
 
 function emitRoom() {
   for (const listener of roomListeners) {
@@ -117,65 +118,6 @@ function ensureSessionState(session: BrowserSessionState): SessionState {
   return existing;
 }
 
-function applyDispatchesForSession(sessionId: string, dispatches: { sessionId: string; message: ServerMessage }[], canonicalMatch?: MatchState) {
-  const browserSession = readBrowserSession();
-  if (!browserSession || browserSession.sessionId !== sessionId) {
-    return;
-  }
-
-  const state = ensureSessionState(browserSession);
-  for (const dispatch of dispatches.filter((entry) => entry.sessionId === sessionId)) {
-    state.lastMessage = dispatch.message;
-    state.eventLog = [...state.eventLog.slice(-23), dispatch.message];
-
-    switch (dispatch.message.type) {
-      case "server.room_snapshot":
-      case "server.room_updated":
-        state.room = dispatch.message.room;
-        state.roomCode = dispatch.message.room.roomCode;
-        state.roomId = dispatch.message.room.roomId;
-        break;
-      case "server.match_snapshot":
-        state.match = dispatch.message.playerView;
-        state.matchId = dispatch.message.matchId;
-        break;
-      case "server.command_rejected":
-        state.lastRejected = dispatch.message;
-        break;
-      default:
-        break;
-    }
-  }
-
-  if (canonicalMatch && state.match?.matchId === canonicalMatch.matchId) {
-    if (canonicalMatch.board) {
-      state.board = canonicalMatch.board;
-    }
-    state.match = projectMatchView(canonicalMatch, state.browserSession.playerId);
-  }
-
-  const patchedSession = {
-    ...state.browserSession,
-    ...(state.roomCode ? { roomCode: state.roomCode } : {}),
-    ...(state.roomId ? { roomId: state.roomId } : {}),
-    ...(state.matchId ? { matchId: state.matchId } : {}),
-  };
-  state.browserSession = patchedSession;
-  writeBrowserSession(patchedSession);
-}
-
-function applyResult(result: { match: MatchState | undefined; dispatches: { sessionId: string; message: ServerMessage }[] }) {
-  const current = readBrowserSession();
-  if (!current) {
-    return getEmptySnapshot();
-  }
-
-  applyDispatchesForSession(current.sessionId, result.dispatches, result.match);
-  emitRoom();
-  emitMatch();
-  return getSnapshotForSession(current.sessionId);
-}
-
 function getEmptySnapshot(): MatchSnapshotState {
   return {
     eventLog: [],
@@ -199,238 +141,133 @@ function getSnapshotForSession(sessionId: string): MatchSnapshotState {
   };
 }
 
-function getMockSeats(roomId: string): MockSeatIdentity[] {
-  return mockSeatsByRoomId.get(roomId) ?? [];
-}
-
-function rememberMockSeat(roomId: string, identity: MockSeatIdentity) {
-  const current = getMockSeats(roomId);
-  if (!current.some((entry) => entry.sessionId === identity.sessionId)) {
-    mockSeatsByRoomId.set(roomId, [...current, identity]);
-  }
-}
-
-function getCurrentMatchState(snapshot: MatchSnapshotState): MatchState | undefined {
-  if (!snapshot.match?.matchId) {
-    return undefined;
+function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): MatchSnapshotState {
+  const browserSession = readBrowserSession();
+  if (!browserSession || browserSession.sessionId !== sessionId) {
+    return getEmptySnapshot();
   }
 
-  return service.getMatch(snapshot.match.matchId);
-}
+  const state = ensureSessionState(browserSession);
+  for (const dispatch of snapshot.dispatches.filter((entry) => entry.sessionId === sessionId)) {
+    state.lastMessage = dispatch.message;
+    state.eventLog = [...state.eventLog.slice(-23), dispatch.message];
+  }
 
-function firstDifferentHex(board: GeneratedBoard): string | undefined {
-  return Object.keys(board.hexes).find((hexId) => hexId !== board.robberHexId);
-}
+  if (snapshot.room) {
+    state.room = snapshot.room;
+    state.roomCode = snapshot.roomCode ?? snapshot.room.roomCode;
+  }
+  if (snapshot.match) {
+    state.match = snapshot.match;
+  }
+  if (snapshot.board) {
+    state.board = snapshot.board;
+  }
+  if (snapshot.lastRejected) {
+    state.lastRejected = snapshot.lastRejected;
+  }
 
-function firstResourceSelection(): ResourceType {
-  return "wood";
-}
-
-function discardHalf(resources: ResourceCounts, requiredCount: number): ResourceCounts {
-  const next: ResourceCounts = {
-    wood: 0,
-    brick: 0,
-    sheep: 0,
-    wheat: 0,
-    ore: 0,
+  const nextSession = {
+    ...state.browserSession,
+    ...(state.roomCode ? { roomCode: state.roomCode } : {}),
+    ...(state.room ? { roomId: state.room.roomId } : {}),
+    ...(state.match ? { matchId: state.match.matchId } : {}),
   };
-  let remaining = requiredCount;
-  for (const type of ["wood", "brick", "sheep", "wheat", "ore"] as const) {
-    while (resources[type] > next[type] && remaining > 0) {
-      next[type] += 1;
-      remaining -= 1;
-    }
-  }
-  return next;
-}
-
-async function advanceMockPlayersInternal(client: LocalRealtimeClient): Promise<MatchSnapshotState> {
-  let snapshot = client.getSnapshot();
-  let currentMatch = getCurrentMatchState(snapshot);
-
-  while (snapshot.match && currentMatch && snapshot.match.playerId !== currentMatch.turn?.activePlayerId && currentMatch.status !== "match_finished") {
-    const activePlayerId = currentMatch.status === "match_setup" ? currentMatch.setup?.currentPlayerId : currentMatch.turn?.activePlayerId;
-    if (!activePlayerId) {
-      break;
-    }
-
-    const mockIdentity = getMockSeats(currentMatch.roomId).find((entry) => entry.playerId === activePlayerId);
-    if (!mockIdentity) {
-      break;
-    }
-
-    const activeView = projectMatchView(currentMatch, activePlayerId);
-    const command = chooseMockCommand(currentMatch, activeView);
-    if (!command) {
-      break;
-    }
-
-    const result = service.submitMatchCommand({
-      commandId: randomId("mock-cmd"),
-      sessionId: mockIdentity.sessionId,
-      matchId: currentMatch.matchId,
-      commandType: command.commandType,
-      payload: command.payload,
-      clientStateVersion: currentMatch.version,
-    });
-
-    const browserSession = readBrowserSession();
-    if (browserSession) {
-      applyDispatchesForSession(browserSession.sessionId, result.dispatches, result.match);
-    }
-
-    snapshot = client.getSnapshot();
-    currentMatch = getCurrentMatchState(snapshot);
-  }
+  state.browserSession = nextSession;
+  writeBrowserSession(nextSession);
 
   emitRoom();
   emitMatch();
-  return snapshot;
+  return getSnapshotForSession(sessionId);
 }
 
-function chooseMockCommand(match: MatchState, view: MatchView): Pick<ClientSubmitCommandMessage, "commandType" | "payload"> | undefined {
-  if (match.status === "match_setup") {
-    if (
-      match.setup?.step === "setup_forward_settlement" ||
-      match.setup?.step === "setup_reverse_settlement"
-    ) {
-      return {
-        commandType: "PLACE_INITIAL_SETTLEMENT",
-        payload: {
-          intersectionId: getLegalInitialSettlementPlacements(match, view.playerId)[0],
-        },
-      };
-    }
+async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
 
-    return {
-      commandType: "PLACE_INITIAL_ROAD",
-      payload: {
-        edgeId: getLegalInitialRoadPlacements(match, view.playerId)[0],
-      },
-    };
+  const body = (await response.json()) as T & { error?: string };
+  if (!response.ok) {
+    throw new Error(body.error ?? "Request failed.");
   }
 
-  const requiredAction = view.requiredAction;
-  if (requiredAction === "ROLL_DICE") {
-    return {
-      commandType: "ROLL_DICE",
-      payload: {},
-    };
-  }
-
-  if (requiredAction === "DISCARD_RESOURCES") {
-    const player = match.players?.find((entry: MatchPlayerState) => entry.playerId === view.playerId);
-    const count = view.requiredDiscardCount ?? 0;
-    return {
-      commandType: "DISCARD_RESOURCES",
-      payload: {
-        resources: discardHalf(player?.resources ?? { wood: 0, brick: 0, sheep: 0, wheat: 0, ore: 0 }, count),
-      },
-    };
-  }
-
-  if (requiredAction === "MOVE_ROBBER") {
-    return {
-      commandType: "MOVE_ROBBER",
-      payload: {
-        targetHexId: match.board ? firstDifferentHex(match.board) : undefined,
-      },
-    };
-  }
-
-  if (requiredAction === "STEAL_RESOURCE") {
-    return {
-      commandType: "STEAL_RESOURCE",
-      payload: {
-        victimPlayerId: view.stealablePlayerIds?.[0],
-      },
-    };
-  }
-
-  if (requiredAction === "PICK_YEAR_OF_PLENTY_RESOURCE") {
-    return {
-      commandType: "PICK_YEAR_OF_PLENTY_RESOURCE",
-      payload: {
-        resourceType: firstResourceSelection(),
-      },
-    };
-  }
-
-  if (requiredAction === "PICK_MONOPOLY_RESOURCE_TYPE") {
-    return {
-      commandType: "PICK_MONOPOLY_RESOURCE_TYPE",
-      payload: {
-        resourceType: "wood",
-      },
-    };
-  }
-
-  if (requiredAction === "RESPOND_TRADE") {
-    return {
-      commandType: "RESPOND_TRADE",
-      payload: {
-        tradeId: view.tradeOffer?.tradeId,
-        response: "reject",
-      },
-    };
-  }
-
-  if (requiredAction === "BUILD_ROAD" && match.turn?.developmentCardResolution) {
-    const edgeId = Object.keys(match.board?.edges ?? {}).find((candidate) =>
-      !match.board?.edges[candidate]?.road,
-    );
-    return edgeId
-      ? {
-          commandType: "BUILD_ROAD",
-          payload: {
-            edgeId,
-          },
-        }
-      : undefined;
-  }
-
-  if (match.turn?.activePlayerId === view.playerId && view.allowedActions?.includes("END_TURN")) {
-    return {
-      commandType: "END_TURN",
-      payload: {},
-    };
-  }
-
-  return undefined;
+  return body;
 }
 
-class LocalRealtimeClient implements RealtimeClient {
+async function pollCurrentSession() {
+  const session = readBrowserSession();
+  if (!session) {
+    return;
+  }
+
+  const snapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(session.sessionId)}`);
+  applyServerSnapshot(session.sessionId, snapshot);
+}
+
+function ensurePolling() {
+  if (typeof window === "undefined" || pollHandle !== undefined) {
+    return;
+  }
+
+  pollHandle = window.setInterval(() => {
+    void pollCurrentSession();
+  }, 2000);
+}
+
+function stopPollingIfUnused() {
+  if (pollHandle === undefined) {
+    return;
+  }
+
+  if (roomListeners.size === 0 && matchListeners.size === 0) {
+    window.clearInterval(pollHandle);
+    pollHandle = undefined;
+  }
+}
+
+function rememberMockSeat(roomCode: string, identity: MockSeatIdentity) {
+  const current = mockSeatsByRoomCode.get(roomCode) ?? [];
+  if (!current.some((entry) => entry.sessionId === identity.sessionId)) {
+    mockSeatsByRoomCode.set(roomCode, [...current, identity]);
+  }
+}
+
+function getMockSeats(roomCode: string): MockSeatIdentity[] {
+  return mockSeatsByRoomCode.get(roomCode) ?? [];
+}
+
+class HttpRealtimeClient implements RealtimeClient {
   async createRoom(input: { displayName: string; maxPlayers?: 3 | 4 }): Promise<MatchSnapshotState> {
     const session = normalizeSession(input.displayName);
-    const state = ensureSessionState(session);
-    const result = service.createRoom({
-      commandId: randomId("create"),
-      sessionId: session.sessionId,
-      playerId: session.playerId,
-      displayName: session.displayName,
-      ...(input.maxPlayers !== undefined ? { maxPlayers: input.maxPlayers } : {}),
+    ensureSessionState(session).eventLog = [];
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/create", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        playerId: session.playerId,
+        displayName: session.displayName,
+        ...(input.maxPlayers !== undefined ? { maxPlayers: input.maxPlayers } : {}),
+      }),
     });
-    state.eventLog = [];
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async joinRoom(input: { displayName: string; roomCode: string }): Promise<MatchSnapshotState> {
     const session = normalizeSession(input.displayName);
-    ensureSessionState(session);
-    const result = service.joinRoom({
-      commandId: randomId("join"),
-      sessionId: session.sessionId,
-      playerId: session.playerId,
-      displayName: session.displayName,
-      roomCode: input.roomCode.toUpperCase(),
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/join", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        playerId: session.playerId,
+        displayName: session.displayName,
+        roomCode: input.roomCode.toUpperCase(),
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async toggleReady(ready: boolean): Promise<MatchSnapshotState> {
@@ -438,15 +275,15 @@ class LocalRealtimeClient implements RealtimeClient {
     if (!session) {
       return getEmptySnapshot();
     }
-    const result = service.toggleReady({
-      commandId: randomId("ready"),
-      sessionId: session.sessionId,
-      ready,
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/action", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        action: "toggle_ready",
+        ready,
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async reassignSeat(targetPlayerId: string, seatIndex: number): Promise<MatchSnapshotState> {
@@ -454,16 +291,16 @@ class LocalRealtimeClient implements RealtimeClient {
     if (!session) {
       return getEmptySnapshot();
     }
-    const result = service.reassignSeat({
-      commandId: randomId("seat"),
-      sessionId: session.sessionId,
-      targetPlayerId,
-      seatIndex,
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/action", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        action: "reassign_seat",
+        targetPlayerId,
+        seatIndex,
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async reassignColor(targetPlayerId: string, color: RoomView["seatStates"][number]["color"] extends infer T ? T : never): Promise<MatchSnapshotState> {
@@ -471,16 +308,16 @@ class LocalRealtimeClient implements RealtimeClient {
     if (!session || !color) {
       return getEmptySnapshot();
     }
-    const result = service.reassignColor({
-      commandId: randomId("color"),
-      sessionId: session.sessionId,
-      targetPlayerId,
-      color,
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/action", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        action: "reassign_color",
+        targetPlayerId,
+        color,
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async startMatch(): Promise<MatchSnapshotState> {
@@ -488,14 +325,14 @@ class LocalRealtimeClient implements RealtimeClient {
     if (!session) {
       return getEmptySnapshot();
     }
-    const result = service.startMatch({
-      commandId: randomId("start"),
-      sessionId: session.sessionId,
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/action", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        action: "start_match",
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async submitCommand(input: Omit<ClientSubmitCommandMessage, "type" | "roomId">): Promise<MatchSnapshotState> {
@@ -503,18 +340,18 @@ class LocalRealtimeClient implements RealtimeClient {
     if (!session || !session.matchId) {
       return getEmptySnapshot();
     }
-    const result = service.submitMatchCommand({
-      commandId: input.commandId,
-      sessionId: session.sessionId,
-      matchId: input.matchId ?? session.matchId,
-      commandType: input.commandType,
-      ...(input.payload !== undefined ? { payload: input.payload } : {}),
-      ...(input.clientStateVersion !== undefined ? { clientStateVersion: input.clientStateVersion } : {}),
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/match/command", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        commandId: input.commandId,
+        matchId: input.matchId ?? session.matchId,
+        commandType: input.commandType,
+        ...(input.payload !== undefined ? { payload: input.payload } : {}),
+        ...(input.clientStateVersion !== undefined ? { clientStateVersion: input.clientStateVersion } : {}),
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   async reattachSession(): Promise<MatchSnapshotState> {
@@ -522,26 +359,31 @@ class LocalRealtimeClient implements RealtimeClient {
     if (!session) {
       return getEmptySnapshot();
     }
-    const result = service.reattachSession({
-      sessionId: session.sessionId,
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>("/api/room/action", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId: session.sessionId,
+        action: "reattach",
+      }),
     });
-    return applyResult({
-      match: result.match,
-      dispatches: result.dispatches,
-    });
+    return applyServerSnapshot(session.sessionId, snapshot);
   }
 
   subscribeRoom(listener: Listener): () => void {
     roomListeners.add(listener);
+    ensurePolling();
     return () => {
       roomListeners.delete(listener);
+      stopPollingIfUnused();
     };
   }
 
   subscribeMatch(listener: Listener): () => void {
     matchListeners.add(listener);
+    ensurePolling();
     return () => {
       matchListeners.delete(listener);
+      stopPollingIfUnused();
     };
   }
 
@@ -559,73 +401,62 @@ class LocalRealtimeClient implements RealtimeClient {
   }
 
   async fillRoomWithMockPlayers(targetPlayers: 3 | 4): Promise<MatchSnapshotState> {
-    const session = readBrowserSession();
-    if (!session) {
+    const browserSession = readBrowserSession();
+    const snapshot = this.getSnapshot();
+    const roomCode = snapshot.room?.roomCode ?? browserSession?.roomCode;
+    if (!browserSession || !roomCode) {
       return getEmptySnapshot();
     }
-    const current = this.getSnapshot();
-    const room = current.room;
-    if (!room) {
-      return current;
-    }
 
-    const currentCount = room.playerSummaries.length;
+    const currentCount = snapshot.room?.playerSummaries.length ?? 0;
     const needed = targetPlayers - currentCount;
-    const browserSession = readBrowserSession();
     for (let index = 0; index < needed; index += 1) {
       const identity: MockSeatIdentity = {
         sessionId: randomId("mock-session"),
         playerId: randomId("mock-player"),
         displayName: `Guest ${currentCount + index + 1}`,
       };
-      rememberMockSeat(room.roomId, identity);
-      const joinResult = service.joinRoom({
-        commandId: randomId("mock-join"),
-        sessionId: identity.sessionId,
-        playerId: identity.playerId,
-        displayName: identity.displayName,
-        roomCode: room.roomCode,
+      rememberMockSeat(roomCode, identity);
+      await fetchJson<ApiRealtimeSnapshot>("/api/room/join", {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: identity.sessionId,
+          playerId: identity.playerId,
+          displayName: identity.displayName,
+          roomCode,
+        }),
       });
-      if (browserSession) {
-        applyDispatchesForSession(browserSession.sessionId, joinResult.dispatches, joinResult.match);
-      }
-    }
-
-    const latestRoom = service.getRoom(room.roomId);
-    if (!latestRoom) {
-      return this.getSnapshot();
-    }
-
-    for (const player of latestRoom.players) {
-      const readyResult = service.toggleReady({
-        commandId: randomId("mock-ready"),
-        sessionId: player.sessionId,
-        ready: true,
+      await fetchJson<ApiRealtimeSnapshot>("/api/room/action", {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: identity.sessionId,
+          action: "toggle_ready",
+          ready: true,
+        }),
       });
-      if (browserSession) {
-        applyDispatchesForSession(browserSession.sessionId, readyResult.dispatches, readyResult.match);
-      }
     }
 
-    const freshRoom = service.getRoom(room.roomId);
-    if (freshRoom && session) {
-      const match = freshRoom.currentMatchId ? service.getMatch(freshRoom.currentMatchId) : undefined;
-      applyDispatchesForSession(session.sessionId, [], match);
-    }
-    emitRoom();
-    return this.getSnapshot();
+    const hostSnapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(browserSession.sessionId)}`);
+    return applyServerSnapshot(browserSession.sessionId, hostSnapshot);
   }
 
   async advanceSandbox(): Promise<MatchSnapshotState> {
-    return advanceMockPlayersInternal(this);
+    const browserSession = readBrowserSession();
+    const current = this.getSnapshot();
+    if (!browserSession || !current.match || !current.board || !current.roomCode) {
+      return current;
+    }
+
+    const refreshed = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(browserSession.sessionId)}`);
+    return applyServerSnapshot(browserSession.sessionId, refreshed);
   }
 }
 
-let singleton: LocalRealtimeClient | undefined;
+let singleton: HttpRealtimeClient | undefined;
 
 export function getRealtimeClient(): RealtimeClient {
   if (!singleton) {
-    singleton = new LocalRealtimeClient();
+    singleton = new HttpRealtimeClient();
   }
   return singleton;
 }

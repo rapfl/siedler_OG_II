@@ -44,9 +44,11 @@ import type {
   MatchSnapshotMessage,
   MatchState,
   MatchCommandType,
+  MatchView,
   PlayerColor,
   PlayerCount,
   PresenceUpdatedMessage,
+  RoomView,
   RoomSnapshotMessage,
   RoomState,
   RoomUpdatedMessage,
@@ -66,6 +68,18 @@ interface RecordedMatchCommand {
   dispatches: RealtimeDispatch[];
 }
 
+export interface InMemoryRealtimeServiceState {
+  rooms: RoomState[];
+  roomCodes: Array<[string, string]>;
+  matches: MatchState[];
+  sessions: SessionBinding[];
+  processedMatchCommands: Array<[string, RecordedMatchCommand]>;
+  roomCounter: number;
+  roomCodeCounter: number;
+  matchCounter: number;
+  seedCounter: number;
+}
+
 export interface RealtimeDispatch {
   sessionId: string;
   message: ServerMessage;
@@ -75,6 +89,13 @@ export interface RealtimeCommandResult {
   room: RoomState;
   match?: MatchState | undefined;
   dispatches: RealtimeDispatch[];
+}
+
+export interface RealtimePlayerSnapshot {
+  room: RoomState;
+  roomView: RoomView;
+  match?: MatchState | undefined;
+  matchView?: MatchView | undefined;
 }
 
 export interface InMemoryRealtimeServiceOptions {
@@ -369,6 +390,64 @@ export class InMemoryRealtimeService {
 
   getMatch(matchId: string): MatchState | undefined {
     return this.matches.get(matchId);
+  }
+
+  getPlayerSnapshot(sessionId: string): RealtimePlayerSnapshot {
+    const binding = this.requireSession(sessionId);
+    const room = this.requireRoom(binding.roomId);
+    const roomView = projectRoomView(room, binding.playerId);
+    const match = room.currentMatchId ? this.matches.get(room.currentMatchId) : undefined;
+    const matchView = match ? projectMatchView(match, binding.playerId) : undefined;
+
+    return {
+      room,
+      roomView,
+      ...(match ? { match } : {}),
+      ...(matchView ? { matchView } : {}),
+    };
+  }
+
+  exportState(): InMemoryRealtimeServiceState {
+    return {
+      rooms: [...this.rooms.values()],
+      roomCodes: [...this.roomCodes.entries()],
+      matches: [...this.matches.values()],
+      sessions: [...this.sessions.values()],
+      processedMatchCommands: [...this.processedMatchCommands.entries()],
+      roomCounter: this.roomCounter,
+      roomCodeCounter: this.roomCodeCounter,
+      matchCounter: this.matchCounter,
+      seedCounter: this.seedCounter,
+    };
+  }
+
+  importState(state: InMemoryRealtimeServiceState): void {
+    this.rooms.clear();
+    this.roomCodes.clear();
+    this.matches.clear();
+    this.sessions.clear();
+    this.processedMatchCommands.clear();
+
+    for (const room of state.rooms) {
+      this.rooms.set(room.roomId, room);
+    }
+    for (const [roomCode, roomId] of state.roomCodes) {
+      this.roomCodes.set(roomCode, roomId);
+    }
+    for (const match of state.matches) {
+      this.matches.set(match.matchId, match);
+    }
+    for (const session of state.sessions) {
+      this.sessions.set(session.sessionId, session);
+    }
+    for (const [key, value] of state.processedMatchCommands) {
+      this.processedMatchCommands.set(key, value);
+    }
+
+    this.roomCounter = state.roomCounter;
+    this.roomCodeCounter = state.roomCodeCounter;
+    this.matchCounter = state.matchCounter;
+    this.seedCounter = state.seedCounter;
   }
 
   submitMatchCommand(input: {
