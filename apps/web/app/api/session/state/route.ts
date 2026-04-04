@@ -1,29 +1,23 @@
-import { NextResponse } from "next/server";
-
+import { jsonNoStore, logApiEvent, parseSessionStateRequest, toErrorResponse } from "../../../../lib/server/api-utils";
 import { getSessionSnapshot } from "../../../../lib/server/realtime-api";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const sessionId = searchParams.get("sessionId");
-
-  if (!sessionId) {
-    return NextResponse.json(
-      {
-        error: "sessionId is required.",
-      },
-      { status: 400 },
-    );
-  }
-
   try {
+    const { sessionId } = parseSessionStateRequest(request);
     const snapshot = await getSessionSnapshot(sessionId);
-    return NextResponse.json(snapshot);
+    logApiEvent("info", "session_state_read", {
+      route: "/api/session/state",
+      method: "GET",
+      sessionId,
+      hasRoom: Boolean(snapshot.room),
+      hasMatch: Boolean(snapshot.match),
+    });
+    return jsonNoStore(snapshot);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to read session state.",
-      },
-      { status: 400 },
-    );
+    return toErrorResponse(error, "Unable to read session state.", { route: "/api/session/state", method: "GET" });
   }
 }

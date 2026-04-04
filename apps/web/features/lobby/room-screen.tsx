@@ -156,20 +156,22 @@ export function RoomScreen({ roomCode }: { roomCode: string }) {
             </div>
           </div>
 
-          <div className="panel p-6">
-            <p className="eyebrow">Local Sandbox</p>
-            <p className="mt-4 text-sm leading-6 text-[var(--text-muted)]">
-              Da die erste UI gegen den lokalen In-Memory-Adapter laeuft, kannst du Gaeste automatisch auffuellen und ready setzen.
-            </p>
-            <div className="mt-5 flex flex-wrap gap-3">
-              <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(3)}>
-                Auf 3 Spieler auffuellen
-              </button>
-              <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(4)}>
-                Auf 4 Spieler auffuellen
-              </button>
+          {client.supportsSandboxTools() ? (
+            <div className="panel p-6">
+              <p className="eyebrow">Local Sandbox</p>
+              <p className="mt-4 text-sm leading-6 text-[var(--text-muted)]">
+                Nur in Development: Gaeste automatisch auffuellen und ready setzen.
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(3)}>
+                  Auf 3 Spieler auffuellen
+                </button>
+                <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(4)}>
+                  Auf 4 Spieler auffuellen
+                </button>
+              </div>
             </div>
-          </div>
+          ) : null}
 
           {room.roomStatus === "room_postgame" ? (
             <div className="panel p-6">

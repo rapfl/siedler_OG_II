@@ -326,9 +326,11 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                   Trade abbrechen
                 </button>
               ) : null}
-              <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
-                Opponents vorziehen
-              </button>
+              {client.supportsSandboxTools() ? (
+                <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
+                  Opponents vorziehen
+                </button>
+              ) : null}
               <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
                 Snapshot reattach
               </button>

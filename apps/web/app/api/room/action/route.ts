@@ -1,26 +1,23 @@
-import { NextResponse } from "next/server";
-
+import { jsonNoStore, logApiEvent, parseRoomActionRequest, toErrorResponse } from "../../../../lib/server/api-utils";
 import { handleRoomAction } from "../../../../lib/server/realtime-api";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as {
-      sessionId: string;
-      action: "toggle_ready" | "reassign_seat" | "reassign_color" | "start_match" | "reattach";
-      ready?: boolean;
-      targetPlayerId?: string;
-      seatIndex?: number;
-      color?: "red" | "blue" | "white" | "orange";
-    };
-
+    const body = await parseRoomActionRequest(request);
     const snapshot = await handleRoomAction(body);
-    return NextResponse.json(snapshot);
+    logApiEvent("info", "room_action_processed", {
+      route: "/api/room/action",
+      method: "POST",
+      sessionId: body.sessionId,
+      action: body.action,
+      rejected: Boolean(snapshot.lastRejected),
+    });
+    return jsonNoStore(snapshot);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to perform room action.",
-      },
-      { status: 400 },
-    );
+    return toErrorResponse(error, "Unable to perform room action.", { route: "/api/room/action", method: "POST" });
   }
 }

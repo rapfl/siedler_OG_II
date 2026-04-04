@@ -1,26 +1,24 @@
-import { NextResponse } from "next/server";
-
+import { parseMatchCommandRequest, toErrorResponse, jsonNoStore, logApiEvent } from "../../../../lib/server/api-utils";
 import { handleMatchCommand } from "../../../../lib/server/realtime-api";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as {
-      sessionId: string;
-      commandId: string;
-      matchId: string;
-      commandType: string;
-      payload?: Record<string, unknown>;
-      clientStateVersion?: number;
-    };
-
-    const snapshot = await handleMatchCommand(body as never);
-    return NextResponse.json(snapshot);
+    const body = await parseMatchCommandRequest(request);
+    const snapshot = await handleMatchCommand(body);
+    logApiEvent("info", "match_command_processed", {
+      route: "/api/match/command",
+      method: "POST",
+      sessionId: body.sessionId,
+      matchId: body.matchId,
+      commandType: body.commandType,
+      rejected: Boolean(snapshot.lastRejected),
+    });
+    return jsonNoStore(snapshot);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to submit command.",
-      },
-      { status: 400 },
-    );
+    return toErrorResponse(error, "Unable to submit command.", { route: "/api/match/command", method: "POST" });
   }
 }

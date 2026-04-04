@@ -1,7 +1,7 @@
 import type { ClientSubmitCommandMessage, CommandRejectedMessage, GeneratedBoard, MatchState, MatchView, RoomView, ServerMessage } from "@siedler/shared-types";
 import type { RealtimeDispatch } from "@siedler/realtime";
 
-import { loadRealtimeService, saveRealtimeService } from "./neon-realtime-store";
+import { loadRealtimeService, mutateRealtimeState } from "./neon-realtime-store";
 
 export interface ApiRealtimeSnapshot {
   room?: RoomView | undefined;
@@ -66,10 +66,7 @@ export async function getSessionSnapshot(sessionId: string): Promise<ApiRealtime
 }
 
 export async function mutateRealtime<T>(mutator: (service: Awaited<ReturnType<typeof loadRealtimeService>>) => T | Promise<T>): Promise<T> {
-  const service = await loadRealtimeService();
-  const result = await mutator(service);
-  await saveRealtimeService(service);
-  return result;
+  return mutateRealtimeState(async (service) => mutator(service));
 }
 
 export async function handleCreateRoom(input: { sessionId: string; playerId: string; displayName: string; maxPlayers?: 3 | 4 }) {

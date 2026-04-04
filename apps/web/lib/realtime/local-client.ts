@@ -11,6 +11,7 @@ import type {
 import { createBrowserSession, readBrowserSession, type BrowserSessionState, writeBrowserSession } from "../session/storage";
 
 type Listener = () => void;
+const sandboxEnabled = process.env.NODE_ENV !== "production";
 
 export interface MatchSnapshotState {
   room?: RoomView;
@@ -38,6 +39,7 @@ export interface RealtimeClient {
   setSessionDisplayName(displayName: string): BrowserSessionState;
   fillRoomWithMockPlayers(targetPlayers: 3 | 4): Promise<MatchSnapshotState>;
   advanceSandbox(): Promise<MatchSnapshotState>;
+  supportsSandboxTools(): boolean;
 }
 
 interface SessionState {
@@ -165,6 +167,8 @@ function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): 
   }
   if (snapshot.lastRejected) {
     state.lastRejected = snapshot.lastRejected;
+  } else if (snapshot.room || snapshot.match || snapshot.board) {
+    delete state.lastRejected;
   }
 
   const nextSession = {
@@ -183,6 +187,7 @@ function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): 
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
+    cache: "no-store",
     ...init,
     headers: {
       "content-type": "application/json",
@@ -204,8 +209,21 @@ async function pollCurrentSession() {
     return;
   }
 
-  const snapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(session.sessionId)}`);
-  applyServerSnapshot(session.sessionId, snapshot);
+  try {
+    const snapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(session.sessionId)}`);
+    applyServerSnapshot(session.sessionId, snapshot);
+  } catch {
+    // Polling should not throw into the browser event loop; a later tick can resync.
+  }
+}
+
+async function refreshCurrentSessionState(sessionId: string): Promise<MatchSnapshotState> {
+  const snapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(sessionId)}`);
+  return applyServerSnapshot(sessionId, snapshot);
+}
+
+function shouldResync(snapshot: MatchSnapshotState): boolean {
+  return snapshot.lastRejected?.reasonCode === "stale_state";
 }
 
 function ensurePolling() {
@@ -253,7 +271,8 @@ class HttpRealtimeClient implements RealtimeClient {
         ...(input.maxPlayers !== undefined ? { maxPlayers: input.maxPlayers } : {}),
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async joinRoom(input: { displayName: string; roomCode: string }): Promise<MatchSnapshotState> {
@@ -267,7 +286,8 @@ class HttpRealtimeClient implements RealtimeClient {
         roomCode: input.roomCode.toUpperCase(),
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async toggleReady(ready: boolean): Promise<MatchSnapshotState> {
@@ -283,7 +303,8 @@ class HttpRealtimeClient implements RealtimeClient {
         ready,
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async reassignSeat(targetPlayerId: string, seatIndex: number): Promise<MatchSnapshotState> {
@@ -300,7 +321,8 @@ class HttpRealtimeClient implements RealtimeClient {
         seatIndex,
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async reassignColor(targetPlayerId: string, color: RoomView["seatStates"][number]["color"] extends infer T ? T : never): Promise<MatchSnapshotState> {
@@ -317,7 +339,8 @@ class HttpRealtimeClient implements RealtimeClient {
         color,
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async startMatch(): Promise<MatchSnapshotState> {
@@ -332,7 +355,8 @@ class HttpRealtimeClient implements RealtimeClient {
         action: "start_match",
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async submitCommand(input: Omit<ClientSubmitCommandMessage, "type" | "roomId">): Promise<MatchSnapshotState> {
@@ -351,7 +375,8 @@ class HttpRealtimeClient implements RealtimeClient {
         ...(input.clientStateVersion !== undefined ? { clientStateVersion: input.clientStateVersion } : {}),
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   async reattachSession(): Promise<MatchSnapshotState> {
@@ -366,7 +391,8 @@ class HttpRealtimeClient implements RealtimeClient {
         action: "reattach",
       }),
     });
-    return applyServerSnapshot(session.sessionId, snapshot);
+    const next = applyServerSnapshot(session.sessionId, snapshot);
+    return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
   subscribeRoom(listener: Listener): () => void {
@@ -401,6 +427,9 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   async fillRoomWithMockPlayers(targetPlayers: 3 | 4): Promise<MatchSnapshotState> {
+    if (!sandboxEnabled) {
+      return this.getSnapshot();
+    }
     const browserSession = readBrowserSession();
     const snapshot = this.getSnapshot();
     const roomCode = snapshot.room?.roomCode ?? browserSession?.roomCode;
@@ -441,6 +470,9 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   async advanceSandbox(): Promise<MatchSnapshotState> {
+    if (!sandboxEnabled) {
+      return this.getSnapshot();
+    }
     const browserSession = readBrowserSession();
     const current = this.getSnapshot();
     if (!browserSession || !current.match || !current.board || !current.roomCode) {
@@ -449,6 +481,10 @@ class HttpRealtimeClient implements RealtimeClient {
 
     const refreshed = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(browserSession.sessionId)}`);
     return applyServerSnapshot(browserSession.sessionId, refreshed);
+  }
+
+  supportsSandboxTools(): boolean {
+    return sandboxEnabled;
   }
 }
 

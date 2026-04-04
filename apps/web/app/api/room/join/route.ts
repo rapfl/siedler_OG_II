@@ -1,24 +1,23 @@
-import { NextResponse } from "next/server";
-
+import { jsonNoStore, logApiEvent, parseJoinRoomRequest, toErrorResponse } from "../../../../lib/server/api-utils";
 import { handleJoinRoom } from "../../../../lib/server/realtime-api";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as {
-      sessionId: string;
-      playerId: string;
-      displayName: string;
-      roomCode: string;
-    };
-
+    const body = await parseJoinRoomRequest(request);
     const snapshot = await handleJoinRoom(body);
-    return NextResponse.json(snapshot);
+    logApiEvent("info", "room_joined", {
+      route: "/api/room/join",
+      method: "POST",
+      sessionId: body.sessionId,
+      playerId: body.playerId,
+      roomCode: body.roomCode,
+    });
+    return jsonNoStore(snapshot);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Unable to join room.",
-      },
-      { status: 400 },
-    );
+    return toErrorResponse(error, "Unable to join room.", { route: "/api/room/join", method: "POST" });
   }
 }

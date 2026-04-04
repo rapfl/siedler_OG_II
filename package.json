@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @siedler/shared-types && npm run build --workspace @siedler/game-engine && npm run build --workspace @siedler/realtime && npm run build --workspace @siedler/web",
+    "build:vercel:web": "npm run build --workspace @siedler/shared-types && npm run build --workspace @siedler/game-engine && npm run build --workspace @siedler/realtime && npm run build --workspace @siedler/web",
     "test": "npm run test --workspace @siedler/game-engine && npm run test --workspace @siedler/realtime",
     "typecheck": "npm run build --workspace @siedler/shared-types && npm run typecheck --workspace @siedler/game-engine && npm run typecheck --workspace @siedler/realtime && npm run typecheck --workspace @siedler/web"
   },
