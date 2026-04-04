@@ -65,7 +65,6 @@ const HARBOR_DISTRIBUTION: HarborType[] = [
   "wheat_2_to_1",
   "ore_2_to_1",
 ];
-const HARBOR_SLOT_INDICES = [0, 3, 6, 10, 13, 17, 20, 23, 27] as const;
 const DEVELOPMENT_CARD_DISTRIBUTION: DevelopmentCardType[] = [
   "knight",
   "knight",
@@ -105,6 +104,7 @@ const CUBE_CORNER_OFFSETS = [
 interface BoardTemplate {
   hexOrder: string[];
   hexCoords: Record<string, { q: number; r: number }>;
+  hexCenters: Record<string, { x: number; y: number }>;
   adjacentHexIds: Record<string, string[]>;
   hexIntersectionIds: Record<string, string[]>;
   hexEdgeIds: Record<string, string[]>;
@@ -186,6 +186,7 @@ export function generateBoard(seed: string): GeneratedBoard {
     boardHexes[hexId] = {
       hexId,
       axialCoord: BOARD_TEMPLATE.hexCoords[hexId]!,
+      uiCenter: BOARD_TEMPLATE.hexCenters[hexId]!,
       resourceType,
       tokenNumber,
       isDesert,
@@ -541,6 +542,7 @@ function ensureRoadStep(step: SetupStep): void {
 function buildBoardTemplate(): BoardTemplate {
   const hexOrder: string[] = [];
   const hexCoords: Record<string, { q: number; r: number }> = {};
+  const hexCenters: Record<string, { x: number; y: number }> = {};
   const hexByCoord = new Map<string, string>();
   const hexIntersectionIds: Record<string, string[]> = {};
   const hexEdgeIds: Record<string, string[]> = {};
@@ -563,9 +565,10 @@ function buildBoardTemplate(): BoardTemplate {
 
       hexOrder.push(hexId);
       hexCoords[hexId] = { q, r };
+      hexCenters[hexId] = hexToPixel(q, r);
       hexByCoord.set(`${q},${r}`, hexId);
 
-      const center = hexToPixel(q, r);
+      const center = hexCenters[hexId]!;
       const cubeCenter = axialToCube(q, r);
       const cornerIds: string[] = [];
       const edgeIds: string[] = [];
@@ -583,6 +586,7 @@ function buildBoardTemplate(): BoardTemplate {
           intersectionPoints.set(intersectionId, point);
           intersections[intersectionId] = {
             intersectionId,
+            uiPosition: point,
             adjacentHexIds: [],
             adjacentEdgeIds: [],
             adjacentIntersectionIds: [],
@@ -605,6 +609,7 @@ function buildBoardTemplate(): BoardTemplate {
           edgesByKey.set(edgeKey, edgeId);
           edges[edgeId] = {
             edgeId,
+            uiMidpoint: edgeMidpointById(a, b, intersectionPoints),
             intersectionAId: a,
             intersectionBId: b,
             adjacentHexIds: [],
@@ -649,14 +654,12 @@ function buildBoardTemplate(): BoardTemplate {
       return Math.atan2(leftMidpoint.y, leftMidpoint.x) - Math.atan2(rightMidpoint.y, rightMidpoint.x);
     });
 
-  const harborSlots = HARBOR_SLOT_INDICES.map((index) => {
-    const edge = coastalEdges[index]!;
-    return [edge.intersectionAId, edge.intersectionBId] as [string, string];
-  });
+  const harborSlots = buildHarborSlots(coastalEdges);
 
   return {
     hexOrder,
     hexCoords,
+    hexCenters,
     adjacentHexIds,
     hexIntersectionIds,
     hexEdgeIds,
@@ -664,6 +667,22 @@ function buildBoardTemplate(): BoardTemplate {
     edges,
     harborSlots,
   };
+}
+
+function buildHarborSlots(coastalEdges: BoardEdge[]): Array<[string, string]> {
+  const step = 3;
+  const harborCount = HARBOR_DISTRIBUTION.length;
+
+  for (let startIndex = 0; startIndex < coastalEdges.length; startIndex += 1) {
+    const candidateEdges = Array.from({ length: harborCount }, (_, index) => coastalEdges[(startIndex + index * step) % coastalEdges.length]!);
+    const intersectionIds = candidateEdges.flatMap((edge) => [edge.intersectionAId, edge.intersectionBId]);
+
+    if (new Set(intersectionIds).size === intersectionIds.length) {
+      return candidateEdges.map((edge) => [edge.intersectionAId, edge.intersectionBId] as [string, string]);
+    }
+  }
+
+  throw new Error("Unable to derive non-overlapping harbor slots from the coastal edge ring.");
 }
 
 function hasInvalidHighTokenAdjacency(terrainOrder: TerrainType[], tokenOrder: readonly number[]): boolean {
@@ -696,6 +715,20 @@ function hasInvalidHighTokenAdjacency(terrainOrder: TerrainType[], tokenOrder: r
 function edgeMidpoint(edge: BoardEdge, intersectionPoints: Map<string, { x: number; y: number }>) {
   const a = intersectionPoints.get(edge.intersectionAId)!;
   const b = intersectionPoints.get(edge.intersectionBId)!;
+
+  return {
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  };
+}
+
+function edgeMidpointById(
+  intersectionAId: string,
+  intersectionBId: string,
+  intersectionPoints: Map<string, { x: number; y: number }>,
+) {
+  const a = intersectionPoints.get(intersectionAId)!;
+  const b = intersectionPoints.get(intersectionBId)!;
 
   return {
     x: (a.x + b.x) / 2,

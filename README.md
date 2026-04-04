@@ -39,3 +39,8 @@ Eine browserbasierte Multiplayer-Webapp für private Runden mit Friends:
 3. API- und Event-Contracts
 4. Board-Modell und Regeln-Engine
 5. Umsetzungsplan fürs Dev-Team
+
+## Autonome Codex-Loops
+- `npm run codex:loop` führt die Repo-Gates aus, wählt den nächsten bearbeitbaren Queue-Eintrag und schreibt einen Report nach `ops/runs/latest.md`.
+- Die operative Arbeitslogik liegt in `AGENTS.md`.
+- Der maschinenlesbare Arbeitsvorrat liegt in `ops/work-queue.json`.

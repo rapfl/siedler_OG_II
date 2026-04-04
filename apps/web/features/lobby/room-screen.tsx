@@ -2,24 +2,28 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "../../components/shell";
-import { AssetToken } from "../../lib/assets/manifest";
+import { createRoomScreenModel } from "../../lib/ui/room-screen-model";
+import { playerColorToken, roomBlockerCopy } from "../../lib/ui/view-model";
 import { useRealtimeSnapshot } from "../../lib/realtime/use-realtime";
-import { roomBlockerCopy, roomStatusBadge } from "../../lib/ui/view-model";
-import type { PlayerColor, RoomPlayerSummary, RoomSeatState, RoomStartBlocker } from "@siedler/shared-types";
+import { useRouteBodyClass } from "../../lib/ui/use-route-body-class";
+import type { PlayerColor } from "@siedler/shared-types";
 
 const COLORS: PlayerColor[] = ["red", "blue", "white", "orange"];
+type LobbyDrawer = "invite" | "tools" | "postgame" | null;
 
 export function RoomScreen({ roomCode }: { roomCode: string }) {
+  useRouteBodyClass("route-room");
+
   const router = useRouter();
   const { client, session, snapshot } = useRealtimeSnapshot();
   const room = snapshot.room;
-  const badge = room ? roomStatusBadge(room) : undefined;
-  const selfPlayerId = room?.selfPlayerId;
-  const selfSeat = room?.seatStates.find((seat: RoomSeatState) => seat.occupantPlayerId === selfPlayerId);
-  const selfSummary = room?.playerSummaries.find((player: RoomPlayerSummary) => player.playerId === selfPlayerId);
+  const sandboxIdentities = client.supportsSandboxTools() ? client.getSandboxIdentities() : [];
+  const model = createRoomScreenModel(room, session, sandboxIdentities.length);
+  const [copyState, setCopyState] = useState<"idle" | "done">("idle");
+  const [activeDrawer, setActiveDrawer] = useState<LobbyDrawer>(null);
 
   useEffect(() => {
     if (room?.currentMatchId && room.roomStatus !== "room_postgame") {
@@ -27,16 +31,21 @@ export function RoomScreen({ roomCode }: { roomCode: string }) {
     }
   }, [room?.currentMatchId, room?.roomStatus, router]);
 
+  const inviteUrl = useMemo(() => {
+    if (!room || typeof window === "undefined") {
+      return room?.invitePath ?? `/room/${roomCode}`;
+    }
+    return `${window.location.origin}${room.invitePath}`;
+  }, [room, roomCode]);
+
   if (!room || room.roomCode !== roomCode) {
     return (
       <AppShell title="siedler_OG_II" kicker="Room">
-        <div className="panel p-8">
+        <div className="empty-state">
           <p className="eyebrow">Room State</p>
-          <h1 className="display-title mt-3 text-4xl">Kein synchronisierter Raum.</h1>
-          <p className="mt-4 max-w-2xl text-[var(--text-muted)]">
-            Oeffne den Raum ueber den Entry-Flow oder setze die lokale Session via Resume fort.
-          </p>
-          <Link href="/" className="action-button mt-6 inline-flex">
+          <h1 className="display-title">Kein synchronisierter Raum.</h1>
+          <p>Oeffne den Raum ueber Entry oder ueber eine bestehende Session.</p>
+          <Link href="/" className="action-button">
             Zur Landing
           </Link>
         </div>
@@ -47,143 +56,222 @@ export function RoomScreen({ roomCode }: { roomCode: string }) {
   return (
     <AppShell
       title={`Room ${room.roomCode}`}
-      kicker="Lobby / Postgame"
+      kicker="Private Lobby"
+      pageClassName="shell-page-route"
+      contentClassName="shell-content-route"
       actions={
-        <div className="flex flex-wrap items-center gap-3">
-          {badge ? <span className={`badge ${badge.tone === "success" ? "status-success" : badge.tone === "warning" ? "status-warning" : badge.tone === "danger" ? "status-danger" : "status-muted"}`}>{badge.label}</span> : null}
+        <div className="header-actions">
+          <span className={`badge status-${model.badge.tone}`}>{model.badge.label}</span>
           {room.currentMatchId ? (
             <Link href={`/match/${room.currentMatchId}`} className="action-button secondary-button">
-              Zum Match
+              Match oeffnen
             </Link>
           ) : null}
         </div>
       }
     >
-      <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <section className="grid gap-6">
-          <div className="panel p-6">
-            <div className="flex flex-wrap items-start justify-between gap-5">
-              <div>
-                <p className="eyebrow">Invite</p>
-                <h2 className="display-title mt-3 text-4xl">{room.roomCode}</h2>
-                <p className="mt-4 max-w-xl text-sm leading-6 text-[var(--text-muted)]">
-                  Private Raum-Koordination mit harter Ready-Validierung. Match und Postgame bleiben im selben Room-Kontext.
-                </p>
-              </div>
-              <div className="card-surface p-4">
-                <p className="text-xs uppercase tracking-[0.22em] text-[#7a6148]">Invite Link</p>
-                <p className="mt-2 text-sm font-medium">/room/{room.roomCode}</p>
-              </div>
+      <div className="lobby-surface">
+        <section className="lobby-stage">
+          <div className="lobby-stage-header">
+            <div>
+              <p className="eyebrow">Private Table</p>
+              <h1 className="display-title match-stage-title">{room.roomCode}</h1>
+              <p className="subtle-copy">
+                Sitzverteilung, Farben und Ready-Status bleiben auf einer kompakten Tafel. Invite und Sandbox liegen im Drawer.
+              </p>
             </div>
+            <div className="match-stage-badges">
+              <span className="hero-pill">Spieler: {room.playerSummaries.length}/{room.maxPlayers}</span>
+              <span className="hero-pill">Host: {room.playerSummaries.find((player) => player.isHost)?.displayName}</span>
+              <span className="hero-pill">Mein Sitz: {model.selfSeat ? model.selfSeat.seatIndex + 1 : "noch keiner"}</span>
+            </div>
+          </div>
 
-            {room.startBlockers.length > 0 ? (
-              <div className="mt-6 grid gap-3">
-                {room.startBlockers.map((blocker: RoomStartBlocker) => (
-                  <div key={blocker} className="badge status-warning">
-                    {roomBlockerCopy(blocker)}
+          <div className="lobby-seat-grid">
+            {room.seatStates.map((seat) => (
+              <article key={seat.seatIndex} className={`lobby-seat-card ${seat.occupantPlayerId === model.selfPlayerId ? "lobby-seat-card-self" : ""}`}>
+                <div className="player-chip-top">
+                  <span className={`player-swatch ${playerColorToken(seat.color)}`} />
+                  <div>
+                    <p className="player-name">
+                      {seat.occupantDisplayName ?? `Seat ${seat.seatIndex + 1}`}
+                      {seat.isHost ? <span className="micro-tag">HOST</span> : null}
+                    </p>
+                    <p className="player-meta">Seat {seat.seatIndex + 1}</p>
                   </div>
-                ))}
-              </div>
-            ) : null}
+                </div>
+                <div className="cost-row">
+                  <span className={`badge ${seat.ready ? "status-success" : "status-muted"}`}>{seat.ready ? "Ready" : "Nicht ready"}</span>
+                  <span className="badge">{seat.presence}</span>
+                </div>
+                {model.selfPlayerId === room.hostPlayerId && seat.occupantPlayerId ? (
+                  <div className="lobby-seat-actions">
+                    <div className="seat-controls">
+                      {room.seatStates.map((targetSeat) => (
+                        <button
+                          key={`${seat.occupantPlayerId}-${targetSeat.seatIndex}`}
+                          className="secondary-button small-button"
+                          onClick={() => void client.reassignSeat(seat.occupantPlayerId!, targetSeat.seatIndex)}
+                        >
+                          S{targetSeat.seatIndex + 1}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="seat-controls">
+                      {COLORS.map((color) => (
+                        <button
+                          key={`${seat.occupantPlayerId}-${color}`}
+                          className={`color-choice ${playerColorToken(color)} ${seat.color === color ? "color-choice-active" : ""}`}
+                          onClick={() => void client.reassignColor(seat.occupantPlayerId!, color)}
+                        >
+                          {color}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
 
-            <div className="mt-6 flex flex-wrap gap-3">
-              <button className="action-button" onClick={() => void client.toggleReady(!(selfSummary?.ready ?? false))}>
-                {selfSummary?.ready ? "Ready zuruecknehmen" : "Ready setzen"}
-              </button>
-              {room.canStartMatch && selfPlayerId === room.hostPlayerId ? (
-                <button className="action-button secondary-button" onClick={async () => {
+          {room.startBlockers.length > 0 ? (
+            <div className="blocker-list">
+              {room.startBlockers.map((blocker) => (
+                <div key={blocker} className="inline-warning">
+                  {roomBlockerCopy(blocker)}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {activeDrawer ? (
+            <aside className="lobby-drawer">
+              <div className="match-drawer-header">
+                <p className="eyebrow">Lobby Drawer</p>
+                <button className="secondary-button small-button" onClick={() => setActiveDrawer(null)}>
+                  Schliessen
+                </button>
+              </div>
+              {activeDrawer === "invite" ? (
+                <div className="match-drawer-body">
+                  <div className="rail-block">
+                    <p className="invite-label">Room Code</p>
+                    <p className="invite-code">{room.roomCode}</p>
+                  </div>
+                  <div className="rail-block">
+                    <p className="invite-label">Invite Link</p>
+                    <p className="invite-link-text">{inviteUrl}</p>
+                  </div>
+                </div>
+              ) : null}
+              {activeDrawer === "tools" ? (
+                <div className="match-drawer-body">
+                  <div className="rail-block">
+                    <span className="micro-stat">Name: {model.sessionName}</span>
+                    {model.selfSeat ? <span className="micro-stat">Seat: {model.selfSeat.seatIndex + 1}</span> : null}
+                    {model.selfSummary ? <span className="micro-stat">Status: {model.selfSummary.ready ? "Ready" : "Nicht ready"}</span> : null}
+                    <div className="cluster">
+                      <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
+                        Reattach
+                      </button>
+                      {room.currentMatchId ? (
+                        <button className="action-button" onClick={() => router.push(`/match/${room.currentMatchId}`)}>
+                          Zum Match
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {client.supportsSandboxTools() ? (
+                    <div className="rail-block">
+                      <p className="subtle-copy">Nur lokal: freie Sitze automatisch mit Testspielern fuellen und die Perspektive in diesem Browser wechseln.</p>
+                      <div className="cluster">
+                        <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(3)}>
+                          Auf 3 Spieler
+                        </button>
+                        <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(4)}>
+                          Auf 4 Spieler
+                        </button>
+                      </div>
+                      {sandboxIdentities.length > 0 ? (
+                        <div className="seat-controls">
+                          {sandboxIdentities.map((identity) => (
+                            <button
+                              key={identity.sessionId}
+                              className={`secondary-button small-button ${identity.isCurrent ? "button-active" : ""}`}
+                              onClick={() => void client.switchSandboxIdentity(identity.sessionId)}
+                            >
+                              {identity.displayName}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {activeDrawer === "postgame" ? (
+                <div className="match-drawer-body">
+                  <div className="rail-block">
+                    <span className="micro-stat">Gewinner: {room.postgameSummary?.winnerPlayerId}</span>
+                    <span className="micro-stat">Punkte: {room.postgameSummary?.winningTotalPoints}</span>
+                    <span className="micro-stat">Ursache: {room.postgameSummary?.victoryCause}</span>
+                  </div>
+                </div>
+              ) : null}
+            </aside>
+          ) : null}
+        </section>
+
+        <section className="lobby-dock">
+          <div className="lobby-dock-main">
+            <button
+              className="action-button"
+              onClick={async () => {
+                if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+                  await navigator.clipboard.writeText(inviteUrl);
+                  setCopyState("done");
+                  window.setTimeout(() => setCopyState("idle"), 1400);
+                  return;
+                }
+
+                setActiveDrawer("invite");
+              }}
+            >
+              {copyState === "done" ? "Link kopiert" : "Invite kopieren"}
+            </button>
+            <button className="action-button secondary-button" onClick={() => void client.toggleReady(!(model.selfSummary?.ready ?? false))}>
+              {model.selfSummary?.ready ? "Ready zuruecknehmen" : "Ready setzen"}
+            </button>
+            {room.canStartMatch && model.selfPlayerId === room.hostPlayerId ? (
+              <button
+                className="action-button success-button"
+                onClick={async () => {
                   const next = await client.startMatch();
                   if (next.match?.matchId) {
                     router.push(`/match/${next.match.matchId}`);
                   }
-                }}>
-                  Match starten
-                </button>
-              ) : null}
-            </div>
+                }}
+              >
+                Match starten
+              </button>
+            ) : (
+              <span className="micro-stat">Start blockiert, bis alle Sitze bereit sind.</span>
+            )}
           </div>
 
-          <div className="panel p-6">
-            <p className="eyebrow">Seats</p>
-            <div className="mt-5 grid gap-4 md:grid-cols-2">
-              {room.seatStates.map((seat: RoomSeatState) => (
-                <div key={seat.seatIndex} className="inlay p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <AssetToken asset={seat.ready ? "status_ready" : "status_not_ready"} tone={seat.ready ? "success" : "default"} />
-                      <div>
-                        <p className="text-sm uppercase tracking-[0.2em] text-[var(--text-muted)]">Seat {seat.seatIndex + 1}</p>
-                        <p className="mt-1 text-lg text-[var(--text-strong)]">{seat.occupantDisplayName ?? "Leer"}</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      <span className={`badge ${seat.ready ? "status-success" : "status-muted"}`}>
-                        {seat.presence}
-                      </span>
-                      <span className="badge">{seat.color ?? COLORS[seat.seatIndex] ?? "n/a"}</span>
-                    </div>
-                  </div>
-                  {selfPlayerId === room.hostPlayerId && seat.occupantPlayerId ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {room.seatStates.map((targetSeat: RoomSeatState) => (
-                        <button
-                          key={`${seat.occupantPlayerId}-${targetSeat.seatIndex}`}
-                          className="secondary-button rounded-full border border-[var(--line)] px-3 py-1 text-xs tracking-[0.16em] text-[var(--text-muted)]"
-                          onClick={() => void client.reassignSeat(seat.occupantPlayerId!, targetSeat.seatIndex)}
-                        >
-                          Seat {targetSeat.seatIndex + 1}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
+          <div className="match-utility-tabs">
+            <button className={`utility-button ${activeDrawer === "invite" ? "utility-button-active" : ""}`} onClick={() => setActiveDrawer((current) => (current === "invite" ? null : "invite"))}>
+              Invite
+            </button>
+            <button className={`utility-button ${activeDrawer === "tools" ? "utility-button-active" : ""}`} onClick={() => setActiveDrawer((current) => (current === "tools" ? null : "tools"))}>
+              Tools
+            </button>
+            {room.roomStatus === "room_postgame" ? (
+              <button className={`utility-button ${activeDrawer === "postgame" ? "utility-button-active" : ""}`} onClick={() => setActiveDrawer((current) => (current === "postgame" ? null : "postgame"))}>
+                Postgame
+              </button>
+            ) : null}
           </div>
-        </section>
-
-        <section className="grid gap-6">
-          <div className="panel p-6">
-            <p className="eyebrow">Self / Resume</p>
-            <div className="mt-4 grid gap-3">
-              <div className="badge">{session?.displayName ?? "Keine Session"}</div>
-              {selfSeat ? <div className="badge">Seat {selfSeat.seatIndex + 1}</div> : null}
-              {room.currentMatchId ? (
-                <button className="action-button" onClick={() => router.push(`/match/${room.currentMatchId}`)}>
-                  Aktives Match oeffnen
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          {client.supportsSandboxTools() ? (
-            <div className="panel p-6">
-              <p className="eyebrow">Local Sandbox</p>
-              <p className="mt-4 text-sm leading-6 text-[var(--text-muted)]">
-                Nur in Development: Gaeste automatisch auffuellen und ready setzen.
-              </p>
-              <div className="mt-5 flex flex-wrap gap-3">
-                <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(3)}>
-                  Auf 3 Spieler auffuellen
-                </button>
-                <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(4)}>
-                  Auf 4 Spieler auffuellen
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {room.roomStatus === "room_postgame" ? (
-            <div className="panel p-6">
-              <p className="eyebrow">Postgame</p>
-              <h2 className="display-title mt-3 text-3xl">Match beendet, Room bleibt bestehen.</h2>
-              <div className="mt-5 grid gap-3">
-                <div className="badge">Winner: {room.postgameSummary?.winnerPlayerId}</div>
-                <div className="badge">Punkte: {room.postgameSummary?.winningTotalPoints}</div>
-                <div className="badge">Cause: {room.postgameSummary?.victoryCause}</div>
-              </div>
-            </div>
-          ) : null}
         </section>
       </div>
     </AppShell>

@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-04-04T15:39:11.210Z",
+  "items": [
+    {
+      "id": "OPS-001",
+      "title": "Establish autonomous Codex delivery loop",
+      "status": "completed",
+      "priority": "P0",
+      "area": "ops",
+      "dependencies": [],
+      "specRefs": [
+        "docs/CODEX-BRIEFING.md",
+        "docs/05-delivery/backlog-structure.md",
+        "docs/05-delivery/qa-test-strategy.md"
+      ],
+      "exitCriteria": [
+        "Repo has a documented Codex operating loop.",
+        "Repo has a machine-readable work queue.",
+        "Repo has a script that produces a repeatable triage report."
+      ],
+      "verification": [
+        "npm run codex:loop"
+      ],
+      "notes": "Installed on 2026-04-04."
+    },
+    {
+      "id": "SETUP-001",
+      "title": "Complete seeded board generation coverage and invariants",
+      "status": "completed",
+      "priority": "P0",
+      "area": "engine",
+      "dependencies": [
+        "OPS-001"
+      ],
+      "specRefs": [
+        "docs/03-game-rules/board-model.md",
+        "docs/03-game-rules/rule-engine.md",
+        "docs/03-game-rules/test-scenarios.md",
+        "docs/05-delivery/mvp-roadmap.md"
+      ],
+      "exitCriteria": [
+        "Board generation is deterministic from a seed.",
+        "Hex, harbor, token, and robber invariants are covered by tests.",
+        "Illegal board shapes or token assignments are rejected or impossible by construction."
+      ],
+      "verification": [
+        "npm test",
+        "npm run typecheck"
+      ],
+      "notes": "Completed on 2026-04-04 with deterministic board tests, topology invariant coverage, and a harbor-slot overlap fix in the coastal ring selector.",
+      "claimedAt": "2026-04-04T14:09:40.600Z",
+      "completedAt": "2026-04-04T14:20:55.000Z"
+    },
+    {
+      "id": "SETUP-002",
+      "title": "Finish setup placement legality and start-resource flow",
+      "status": "in_progress",
+      "priority": "P0",
+      "area": "engine",
+      "dependencies": [
+        "SETUP-001"
+      ],
+      "specRefs": [
+        "docs/03-game-rules/state-machine.md",
+        "docs/03-game-rules/rule-engine.md",
+        "docs/03-game-rules/test-scenarios.md"
+      ],
+      "exitCriteria": [
+        "Setup settlement legality matches the spec.",
+        "Setup road adjacency is enforced.",
+        "Second settlement start resources are awarded correctly."
+      ],
+      "verification": [
+        "npm test"
+      ],
+      "notes": "Dependent on stable seeded board assumptions.",
+      "claimedAt": "2026-04-04T15:39:11.210Z"
+    },
+    {
+      "id": "TURN-001",
+      "title": "Expand core turn loop to production and build legality scenarios",
+      "status": "blocked",
+      "priority": "P0",
+      "area": "engine",
+      "dependencies": [
+        "SETUP-002"
+      ],
+      "specRefs": [
+        "docs/03-game-rules/rule-engine.md",
+        "docs/03-game-rules/derived-state.md",
+        "docs/03-game-rules/test-scenarios.md"
+      ],
+      "exitCriteria": [
+        "Production resolves correctly after legal rolls.",
+        "Road, settlement, and city build legality is enforced.",
+        "Scenario tests cover successful and rejected actions."
+      ],
+      "verification": [
+        "npm test",
+        "npm run typecheck"
+      ],
+      "notes": "Next major slice after setup."
+    },
+    {
+      "id": "PROJECTION-001",
+      "title": "Add hidden-information projection tests across web and engine boundaries",
+      "status": "blocked",
+      "priority": "P1",
+      "area": "projection",
+      "dependencies": [
+        "TURN-001"
+      ],
+      "specRefs": [
+        "docs/01-architecture/game-state-visibility-and-rules-constraints.md",
+        "docs/04-api/socket-contracts.md",
+        "docs/05-delivery/qa-test-strategy.md"
+      ],
+      "exitCriteria": [
+        "Player-specific views never leak private hand or card data.",
+        "Projection tests cover self-view and opponent-view cases.",
+        "Transport payloads align with projection guarantees."
+      ],
+      "verification": [
+        "npm test",
+        "npm run build"
+      ],
+      "notes": "Critical before real external multiplayer testing."
+    }
+  ]
+}

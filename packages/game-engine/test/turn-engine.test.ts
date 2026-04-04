@@ -197,6 +197,23 @@ function tryFindLegalSettlementTarget(match: MatchState, playerId: string): stri
   }
 }
 
+function findIllegalSettlementTarget(match: MatchState, playerId: string): string {
+  for (const intersectionId of Object.keys(match.board!.intersections)) {
+    try {
+      buildSettlement(
+        withResources(match, playerId, { wood: 10, brick: 10, sheep: 10, wheat: 10 }),
+        playerId,
+        intersectionId,
+        { now: context.now },
+      );
+    } catch {
+      return intersectionId;
+    }
+  }
+
+  throw new Error(`No illegal settlement target found for ${playerId}`);
+}
+
 describe("turn engine", () => {
   it("plays a regular turn: roll, production, action phase, end turn", () => {
     const match = completeSetup(4);
@@ -316,6 +333,70 @@ describe("turn engine", () => {
     });
     expect(stolen.players?.find((player) => player.playerId === "p1")?.resources.wood).toBe(p1WoodBeforeSteal + 1);
     expect(stolen.players?.find((player) => player.playerId === "p2")?.resources.wood).toBe(p2WoodBeforeSteal - 1);
+  });
+
+  it("builds a connected road, spends the correct cost, and rejects disconnected edges", () => {
+    const primed = toActionPhase(
+      withResources(completeSetup(4), "p1", {
+        wood: 4,
+        brick: 4,
+      }),
+      "p1",
+    );
+
+    const legalEdgeId = findLegalRoadTarget(primed, "p1");
+    const illegalEdgeId = findIllegalRoadTarget(primed, "p1");
+    const woodBefore = primed.players?.find((player) => player.playerId === "p1")?.resources.wood ?? 0;
+    const brickBefore = primed.players?.find((player) => player.playerId === "p1")?.resources.brick ?? 0;
+
+    expect(() => buildRoad(primed, "p1", illegalEdgeId, { now: context.now })).toThrowError(MatchEngineError);
+
+    const built = buildRoad(primed, "p1", legalEdgeId, { now: context.now });
+
+    expect(built.board?.edges[legalEdgeId]?.road?.ownerPlayerId).toBe("p1");
+    expect(built.players?.find((player) => player.playerId === "p1")?.resources.wood).toBe(woodBefore - 1);
+    expect(built.players?.find((player) => player.playerId === "p1")?.resources.brick).toBe(brickBefore - 1);
+  });
+
+  it("builds a legal settlement, spends the correct cost, and enforces road connection", () => {
+    let primed = toActionPhase(
+      withResources(completeSetup(4), "p1", {
+        wood: 10,
+        brick: 10,
+        sheep: 4,
+        wheat: 4,
+      }),
+      "p1",
+    );
+
+    let legalIntersectionId = tryFindLegalSettlementTarget(primed, "p1");
+    let roadsBuilt = 0;
+    while (!legalIntersectionId && roadsBuilt < 8) {
+      primed = buildRoad(primed, "p1", findLegalRoadTarget(primed, "p1"), {
+        now: `2026-04-04T10:${roadsBuilt.toString().padStart(2, "0")}:00.000Z`,
+      });
+      legalIntersectionId = tryFindLegalSettlementTarget(primed, "p1");
+      roadsBuilt += 1;
+    }
+
+    expect(legalIntersectionId).toBeDefined();
+    const illegalIntersectionId = findIllegalSettlementTarget(primed, "p1");
+    const playerBefore = primed.players?.find((player) => player.playerId === "p1")!;
+
+    expect(() => buildSettlement(primed, "p1", illegalIntersectionId, { now: context.now })).toThrowError(MatchEngineError);
+
+    const built = buildSettlement(primed, "p1", legalIntersectionId!, { now: context.now });
+
+    expect(built.board?.intersections[legalIntersectionId!]?.building).toMatchObject({
+      ownerPlayerId: "p1",
+      buildingType: "settlement",
+    });
+    expect(built.players?.find((player) => player.playerId === "p1")?.resources).toMatchObject({
+      wood: playerBefore.resources.wood - 1,
+      brick: playerBefore.resources.brick - 1,
+      sheep: playerBefore.resources.sheep - 1,
+      wheat: playerBefore.resources.wheat - 1,
+    });
   });
 
   it("plays knight before rolling, starts robber flow without discard, and returns to roll pending", () => {

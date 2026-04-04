@@ -12,6 +12,7 @@ export function projectRoomView(room: RoomState, viewerPlayerId?: string): RoomV
   return {
     roomId: room.roomId,
     roomCode: room.roomCode,
+    invitePath: `/room/${room.roomCode}`,
     roomStatus: room.status,
     roomVersion: room.version,
     maxPlayers: room.maxPlayers,
