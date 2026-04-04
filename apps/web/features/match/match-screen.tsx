@@ -97,6 +97,7 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const [bankGive, setBankGive] = useState<ResourceCounts>(emptyResources());
   const [bankWant, setBankWant] = useState<ResourceCounts>(emptyResources());
   const [discardResources, setDiscardResources] = useState<ResourceCounts>(emptyResources());
+  const sandboxIdentities = client.supportsSandboxTools() ? client.getSandboxIdentities() : [];
   const boardMode = isBoardAction(match?.requiredAction) ? match.requiredAction : selectedBoardAction;
   const tradeRatios = useMemo(() => bestTradeRatioByResource(board, match?.playerId), [board, match?.playerId]);
 
@@ -280,9 +281,9 @@ export function MatchScreen({ matchId }: { matchId: string }) {
           <section className="table-overlay side-hud">
             <div className="panel rail-panel compact-panel">
               <p className="eyebrow">Live Status</p>
-              <div className="rail-block">
-                <div className="status-grid">
-                  <span className="micro-stat">Ich: {selfPlayer?.displayName ?? match.playerId}</span>
+            <div className="rail-block">
+              <div className="status-grid">
+                <span className="micro-stat">Ich: {selfPlayer?.displayName ?? match.playerId}</span>
                   <span className="micro-stat">Longest Road: {match.longestRoadLength ?? 0}</span>
                   <span className="micro-stat">Largest Army: {match.largestArmySize ?? 0}</span>
                 </div>
@@ -304,6 +305,19 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                   <button className="action-button secondary-button" onClick={() => void client.reattachSession()}>
                     Reattach
                   </button>
+                  {sandboxIdentities.length > 0 ? (
+                    <div className="cluster">
+                      {sandboxIdentities.map((identity) => (
+                        <button
+                          key={identity.sessionId}
+                          className={`secondary-button small-button ${identity.isCurrent ? "button-active" : ""}`}
+                          onClick={() => void client.switchSandboxIdentity(identity.sessionId)}
+                        >
+                          {identity.displayName}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   {client.supportsSandboxTools() ? (
                     <button className="action-button secondary-button" onClick={() => void client.advanceSandbox()}>
                       Sandbox sync

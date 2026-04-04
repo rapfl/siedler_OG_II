@@ -21,6 +21,7 @@ export function RoomScreen({ roomCode }: { roomCode: string }) {
   const selfSeat = room?.seatStates.find((seat: RoomSeatState) => seat.occupantPlayerId === selfPlayerId);
   const selfSummary = room?.playerSummaries.find((player: RoomPlayerSummary) => player.playerId === selfPlayerId);
   const [copyState, setCopyState] = useState<"idle" | "done">("idle");
+  const sandboxIdentities = client.supportsSandboxTools() ? client.getSandboxIdentities() : [];
 
   useEffect(() => {
     if (room?.currentMatchId && room.roomStatus !== "room_postgame") {
@@ -219,7 +220,7 @@ export function RoomScreen({ roomCode }: { roomCode: string }) {
             <section className="panel rail-panel">
               <p className="eyebrow">Sandbox</p>
               <div className="rail-block">
-                <p className="subtle-copy">Nur lokal: freie Sitze automatisch mit Testspielern fuellen und ready setzen.</p>
+                <p className="subtle-copy">Nur lokal: freie Sitze automatisch mit Testspielern fuellen und danach die Perspektive in diesem Browser wechseln.</p>
                 <div className="cluster">
                   <button className="action-button secondary-button" onClick={() => void client.fillRoomWithMockPlayers(3)}>
                     Auf 3 Spieler
@@ -228,6 +229,22 @@ export function RoomScreen({ roomCode }: { roomCode: string }) {
                     Auf 4 Spieler
                   </button>
                 </div>
+                {sandboxIdentities.length > 0 ? (
+                  <div className="stack-gap">
+                    <p className="editor-title">Perspektive wechseln</p>
+                    <div className="seat-controls">
+                      {sandboxIdentities.map((identity) => (
+                        <button
+                          key={identity.sessionId}
+                          className={`secondary-button small-button ${identity.isCurrent ? "button-active" : ""}`}
+                          onClick={() => void client.switchSandboxIdentity(identity.sessionId)}
+                        >
+                          {identity.displayName}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </section>
           ) : null}

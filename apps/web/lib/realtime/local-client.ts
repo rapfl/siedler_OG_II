@@ -38,6 +38,8 @@ export interface RealtimeClient {
   getSession(): BrowserSessionState | undefined;
   setSessionDisplayName(displayName: string): BrowserSessionState;
   fillRoomWithMockPlayers(targetPlayers: 3 | 4): Promise<MatchSnapshotState>;
+  getSandboxIdentities(): Array<MockSeatIdentity & { isCurrent: boolean }>;
+  switchSandboxIdentity(sessionId: string): Promise<MatchSnapshotState>;
   advanceSandbox(): Promise<MatchSnapshotState>;
   supportsSandboxTools(): boolean;
 }
@@ -59,6 +61,8 @@ interface MockSeatIdentity {
   playerId: string;
   displayName: string;
 }
+
+const SANDBOX_IDENTITY_STORAGE_KEY = "siedler_og_ii_sandbox_identities";
 
 interface ApiRealtimeSnapshot {
   room?: RoomView;
@@ -268,14 +272,93 @@ function stopPollingIfUnused() {
 }
 
 function rememberMockSeat(roomCode: string, identity: MockSeatIdentity) {
-  const current = mockSeatsByRoomCode.get(roomCode) ?? [];
-  if (!current.some((entry) => entry.sessionId === identity.sessionId)) {
-    mockSeatsByRoomCode.set(roomCode, [...current, identity]);
+  const current = getMockSeats(roomCode);
+  if (current.some((entry) => entry.sessionId === identity.sessionId)) {
+    return;
   }
+
+  const next = [...current, identity];
+  mockSeatsByRoomCode.set(roomCode, next);
+  writeSandboxIdentities(roomCode, next);
 }
 
 function getMockSeats(roomCode: string): MockSeatIdentity[] {
-  return mockSeatsByRoomCode.get(roomCode) ?? [];
+  const existing = mockSeatsByRoomCode.get(roomCode);
+  if (existing) {
+    return existing;
+  }
+
+  const restored = readSandboxIdentities(roomCode);
+  mockSeatsByRoomCode.set(roomCode, restored);
+  return restored;
+}
+
+function readSandboxIdentityMap(): Record<string, MockSeatIdentity[]> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SANDBOX_IDENTITY_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "object" || parsed === null) {
+      return {};
+    }
+
+    const next: Record<string, MockSeatIdentity[]> = {};
+    for (const [roomCode, identities] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(identities)) {
+        continue;
+      }
+      next[roomCode] = identities.filter(isMockSeatIdentity);
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+function readSandboxIdentities(roomCode: string): MockSeatIdentity[] {
+  return readSandboxIdentityMap()[roomCode] ?? [];
+}
+
+function writeSandboxIdentities(roomCode: string, identities: MockSeatIdentity[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const current = readSandboxIdentityMap();
+    current[roomCode] = identities;
+    window.localStorage.setItem(SANDBOX_IDENTITY_STORAGE_KEY, JSON.stringify(current));
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
+}
+
+function isMockSeatIdentity(value: unknown): value is MockSeatIdentity {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<MockSeatIdentity>;
+  return typeof candidate.sessionId === "string" && typeof candidate.playerId === "string" && typeof candidate.displayName === "string";
+}
+
+function rememberCurrentSeat(session: BrowserSessionState) {
+  if (!session.roomCode) {
+    return;
+  }
+
+  rememberMockSeat(session.roomCode, {
+    sessionId: session.sessionId,
+    playerId: session.playerId,
+    displayName: session.displayName,
+  });
 }
 
 class HttpRealtimeClient implements RealtimeClient {
@@ -292,6 +375,7 @@ class HttpRealtimeClient implements RealtimeClient {
       }),
     });
     const next = applyServerSnapshot(session.sessionId, snapshot);
+    rememberCurrentSeat(readBrowserSession() ?? session);
     return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
@@ -307,6 +391,7 @@ class HttpRealtimeClient implements RealtimeClient {
       }),
     });
     const next = applyServerSnapshot(session.sessionId, snapshot);
+    rememberCurrentSeat(readBrowserSession() ?? session);
     return shouldResync(next) ? refreshCurrentSessionState(session.sessionId) : next;
   }
 
@@ -486,7 +571,63 @@ class HttpRealtimeClient implements RealtimeClient {
     }
 
     const hostSnapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(browserSession.sessionId)}`);
-    return applyServerSnapshot(browserSession.sessionId, hostSnapshot);
+    const next = applyServerSnapshot(browserSession.sessionId, hostSnapshot);
+    rememberCurrentSeat(readBrowserSession() ?? browserSession);
+    return next;
+  }
+
+  getSandboxIdentities(): Array<MockSeatIdentity & { isCurrent: boolean }> {
+    if (!sandboxEnabled) {
+      return [];
+    }
+
+    const session = readBrowserSession();
+    const roomCode = this.getSnapshot().room?.roomCode ?? session?.roomCode;
+    if (!roomCode) {
+      return [];
+    }
+
+    if (session) {
+      rememberCurrentSeat(session);
+    }
+
+    return getMockSeats(roomCode).map((identity) => ({
+      ...identity,
+      isCurrent: identity.sessionId === session?.sessionId,
+    }));
+  }
+
+  async switchSandboxIdentity(sessionId: string): Promise<MatchSnapshotState> {
+    if (!sandboxEnabled) {
+      return this.getSnapshot();
+    }
+
+    const current = readBrowserSession();
+    const roomCode = this.getSnapshot().room?.roomCode ?? current?.roomCode;
+    if (!roomCode) {
+      return this.getSnapshot();
+    }
+
+    const identity = getMockSeats(roomCode).find((entry) => entry.sessionId === sessionId);
+    if (!identity) {
+      throw new Error("Unknown sandbox identity.");
+    }
+
+    const nextSession: BrowserSessionState = {
+      sessionId: identity.sessionId,
+      playerId: identity.playerId,
+      displayName: identity.displayName,
+      ...(current?.roomCode ? { roomCode: current.roomCode } : {}),
+      ...(current?.roomId ? { roomId: current.roomId } : {}),
+      ...(current?.matchId ? { matchId: current.matchId } : {}),
+    };
+
+    writeBrowserSession(nextSession);
+    ensureSessionState(nextSession);
+    emitRoom();
+    emitMatch();
+
+    return refreshCurrentSessionState(identity.sessionId);
   }
 
   async advanceSandbox(): Promise<MatchSnapshotState> {
