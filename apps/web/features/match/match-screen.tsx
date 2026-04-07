@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ClientErrorBoundary } from "../../components/client-error-boundary";
 import { GameBoard } from "../../components/game-board";
@@ -148,7 +148,7 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const boardSelectionHint = describeBoardSelection(boardMode, match);
   const phaseDisplay = phaseDisplayLabel(match);
   const resourceBarEntries = resourceEntries(match.ownResources);
-  const recentChronicleEntries = snapshot.eventLog.slice().reverse().slice(0, 4);
+  const recentChronicleEntries = snapshot.eventLog.slice(-4).reverse();
   const canRollDice = match.allowedActions?.includes("ROLL_DICE") ?? false;
   const canBuyDevCard = match.allowedActions?.includes("BUY_DEV_CARD") ?? false;
   const isBuildMenuOpen = boardMode === "BUILD_ROAD" || boardMode === "BUILD_SETTLEMENT" || boardMode === "UPGRADE_CITY" || buildMode !== null;
@@ -195,21 +195,6 @@ export function MatchScreen({ matchId }: { matchId: string }) {
     <AppShell
       title="Settlers of the Realm"
       brandIcon={<ChronicleIcon kind="brand" />}
-      headerCenter={
-        <div className="realm-resource-bar" aria-label="Ressourcenleiste">
-          {resourceBarEntries.map((resource, index) => (
-            <div key={resource.type} className="realm-resource-slot">
-              <span className={`realm-resource-icon realm-resource-icon-${resource.type}`}>
-                <ChronicleIcon kind={resource.type} />
-              </span>
-              <span className="realm-resource-copy">
-                {resource.label}: {resource.count}
-              </span>
-              {index < resourceBarEntries.length - 1 ? <span className="realm-resource-divider" /> : null}
-            </div>
-          ))}
-        </div>
-      }
       pageClassName="shell-page-route"
       contentClassName="shell-content-route"
       actions={
@@ -306,11 +291,12 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                   }}
                 />
 
-                {!isSetupPhase && typeof match.lastRoll === "number" ? (
-                  <div className="realm-roll-tray" aria-label={`Letzter Wurf: ${match.lastRoll}`}>
-                    <div className="realm-roll-chip realm-roll-chip-label">Roll</div>
-                    <div className="realm-roll-chip">{match.lastRoll}</div>
-                  </div>
+                {!isSetupPhase ? (
+                  <BoardDice
+                    canRollDice={canRollDice}
+                    lastRoll={match.lastRoll}
+                    onRollDice={() => void submit(client, match, "ROLL_DICE", {})}
+                  />
                 ) : null}
 
                 <div className="realm-board-caption">
@@ -366,6 +352,21 @@ export function MatchScreen({ matchId }: { matchId: string }) {
           </div>
 
           <section className="realm-dock">
+            <div className="realm-dock-hand">
+              <div className="realm-resource-hand" aria-label="Your resources">
+                {resourceBarEntries.map((resource) => (
+                  <div
+                    key={resource.type}
+                    className={`realm-resource-card realm-resource-card-${resource.type} ${resource.count === 0 ? "realm-resource-card-empty" : ""}`}
+                    style={{ "--card-img": `url(/tiles/${resource.type}.png)` } as React.CSSProperties}
+                    title={`${resource.label}: ${resource.count}`}
+                  >
+                    <span className="realm-resource-card-count">{resource.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="realm-dock-actions">
               <DockButton
                 label="Build"
@@ -413,19 +414,19 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                   <DockButton
                     label="Road"
                     active={buildMode === "ROAD" || boardMode === "BUILD_ROAD"}
-                    disabled={!(match.allowedActions?.includes("BUILD_ROAD") ?? false)}
+                    disabled={!match.allowedActions?.includes("BUILD_ROAD")}
                     onClick={() => toggleBuildSelection("ROAD", "BUILD_ROAD")}
                   />
                   <DockButton
                     label="Settlement"
                     active={buildMode === "SETTLEMENT" || boardMode === "BUILD_SETTLEMENT"}
-                    disabled={!(match.allowedActions?.includes("BUILD_SETTLEMENT") ?? false)}
+                    disabled={!match.allowedActions?.includes("BUILD_SETTLEMENT")}
                     onClick={() => toggleBuildSelection("SETTLEMENT", "BUILD_SETTLEMENT")}
                   />
                   <DockButton
                     label="City"
                     active={buildMode === "CITY" || boardMode === "UPGRADE_CITY"}
-                    disabled={!(match.allowedActions?.includes("UPGRADE_CITY") ?? false)}
+                    disabled={!match.allowedActions?.includes("UPGRADE_CITY")}
                     onClick={() => toggleBuildSelection("CITY", "UPGRADE_CITY")}
                   />
                   <div className="realm-inline-guidance">
@@ -447,15 +448,6 @@ export function MatchScreen({ matchId }: { matchId: string }) {
             </div>
 
             <div className="realm-dock-primary-actions">
-              {canRollDice ? (
-                <button type="button" className="realm-primary-turn-button" onClick={() => void submit(client, match, "ROLL_DICE", {})}>
-                  <span className="realm-end-turn-eyebrow">Turn start</span>
-                  <span className="realm-end-turn-title">Roll Dice</span>
-                  <span className="realm-end-turn-mark">
-                    <ChronicleIcon kind="dice" />
-                  </span>
-                </button>
-              ) : null}
 
               {canBuyDevCard && activeUtility !== "dev" ? (
                 <button type="button" className="realm-primary-turn-button realm-primary-turn-button-secondary" onClick={() => toggleUtilityPanel("dev")}>
@@ -469,21 +461,114 @@ export function MatchScreen({ matchId }: { matchId: string }) {
 
               <button
                 type="button"
-                className="realm-end-turn-button"
+                className="realm-end-turn-icon-button"
                 disabled={!(match.allowedActions?.includes("END_TURN") ?? false) || forcedSurface !== null}
                 onClick={() => void submit(client, match, "END_TURN", {})}
+                aria-label="End Turn"
+                title="End Turn"
               >
-                <span className="realm-end-turn-eyebrow">Finished trading?</span>
-                <span className="realm-end-turn-title">End Turn</span>
-                <span className="realm-end-turn-mark">
-                  <ChronicleIcon kind="hourglass" />
-                </span>
+                <ChronicleIcon kind="hourglass" />
               </button>
             </div>
           </section>
         </div>
       </ClientErrorBoundary>
     </AppShell>
+  );
+}
+
+function splitRoll(total: number): [number, number] {
+  const min = Math.max(1, total - 6);
+  const max = Math.min(6, total - 1);
+  const die1 = min + Math.floor(Math.random() * (max - min + 1));
+  return [die1, total - die1];
+}
+
+function DieFace({ value, delay }: { value: number; delay: number }) {
+  const dots: [number, number][] = {
+    1: [[50, 50]],
+    2: [[25, 25], [75, 75]],
+    3: [[25, 25], [50, 50], [75, 75]],
+    4: [[25, 25], [75, 25], [25, 75], [75, 75]],
+    5: [[25, 25], [75, 25], [50, 50], [25, 75], [75, 75]],
+    6: [[25, 22], [75, 22], [25, 50], [75, 50], [25, 78], [75, 78]],
+  }[value] ?? [[50, 50]];
+
+  return (
+    <div className="realm-die" style={{ animationDelay: `${delay}ms` }}>
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        {dots.map(([cx, cy], i) => (
+          <circle key={i} cx={cx} cy={cy} r={value === 6 ? 7.5 : 8} fill="#1c1814" />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function BoardDice({
+  canRollDice,
+  lastRoll,
+  onRollDice,
+}: {
+  canRollDice: boolean;
+  lastRoll: number | undefined;
+  onRollDice: () => void;
+}) {
+  const rollRef = useRef<number | null>(null);
+  const [dice, setDice] = useState<[number, number]>([1, 1]);
+  const [animKey, setAnimKey] = useState(0);
+
+  useEffect(() => {
+    if (typeof lastRoll === "number" && rollRef.current !== lastRoll) {
+      rollRef.current = lastRoll;
+      setDice(splitRoll(lastRoll));
+      setAnimKey((k) => k + 1);
+    }
+  }, [lastRoll]);
+
+  const hasResult = typeof lastRoll === "number" && !canRollDice;
+
+  return (
+    <div className={`board-dice-tray${canRollDice ? " board-dice-tray-ready" : ""}`} key={animKey}>
+      {([0, 1] as const).map((i) => (
+        <button
+          key={i}
+          type="button"
+          className={`board-die${canRollDice ? " board-die-ready" : ""}${hasResult ? " board-die-result" : ""}`}
+          disabled={!canRollDice}
+          onClick={canRollDice ? onRollDice : undefined}
+          style={{ animationDelay: canRollDice ? `${i * 120}ms` : "0ms" }}
+          aria-label={canRollDice ? "Roll dice" : undefined}
+        >
+          {hasResult ? (
+            <DieFace value={dice[i]} delay={i * 60} />
+          ) : (
+            <svg viewBox="0 0 100 100" aria-hidden="true" />
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DiceRollTray({ roll, inactive }: { roll: number; inactive: boolean }) {
+  const rollRef = useRef<number | null>(null);
+  const [dice, setDice] = useState<[number, number]>(() => splitRoll(roll));
+  const [animKey, setAnimKey] = useState(0);
+
+  useEffect(() => {
+    if (rollRef.current !== roll) {
+      rollRef.current = roll;
+      setDice(splitRoll(roll));
+      setAnimKey((k) => k + 1);
+    }
+  }, [roll]);
+
+  return (
+    <div className={`realm-roll-tray${inactive ? " realm-roll-tray-inactive" : ""}`} aria-label={`Last roll: ${roll}`} key={animKey}>
+      <DieFace value={dice[0]} delay={0} />
+      <DieFace value={dice[1]} delay={60} />
+    </div>
   );
 }
 
@@ -537,8 +622,8 @@ function CouncilSeatCard({
           <span className="realm-council-status-dot" />
         </div>
         <div className="realm-council-stats">
-          <span>VP: {player.visiblePoints}</span>
-          <span>Cards: {player.resourceCardCount}</span>
+          <span className="realm-council-stat-chip realm-council-stat-chip-vp">⚑ {player.visiblePoints} VP</span>
+          <span className="realm-council-stat-chip">{player.resourceCardCount} cards</span>
         </div>
       </div>
     </article>
@@ -628,10 +713,14 @@ function MatchSidebarPanel({
                 <p className="subtle-copy">Offer to the full table, collect responses, then confirm one accepted deal.</p>
               </div>
             </div>
-            <div className="composer-grid">
-              <ResourceEditor title="I give" resources={tradeGive} onChange={setTradeGive} />
-              <ResourceEditor title="I want" resources={tradeWant} onChange={setTradeWant} />
-            </div>
+            <TradeComposer
+              giveResources={tradeGive}
+              wantResources={tradeWant}
+              onGiveChange={setTradeGive}
+              onWantChange={setTradeWant}
+              giveLabel="Give"
+              wantLabel="Want"
+            />
             <button
               className="action-button"
               disabled={!(match.allowedActions?.includes("OFFER_TRADE") ?? false)}
@@ -705,10 +794,14 @@ function MatchSidebarPanel({
                 <p className="subtle-copy">Rates: {RESOURCE_TYPES.map((resource) => `${resourceLabel(resource)} ${model.tradeRatios[resource]}:1`).join(" · ")}</p>
               </div>
             </div>
-            <div className="composer-grid">
-              <ResourceEditor title="I give" resources={bankGive} onChange={setBankGive} />
-              <ResourceEditor title="I receive" resources={bankWant} onChange={setBankWant} />
-            </div>
+            <TradeComposer
+              giveResources={bankGive}
+              wantResources={bankWant}
+              onGiveChange={setBankGive}
+              onWantChange={setBankWant}
+              giveLabel="Give"
+              wantLabel="Receive"
+            />
             <button
               className="action-button"
               disabled={!(match.allowedActions?.includes("TRADE_WITH_BANK") ?? false)}
@@ -991,6 +1084,69 @@ function ForcedActionStrip({
   }
 
   return null;
+}
+
+function TradeComposer({
+  giveResources,
+  wantResources,
+  onGiveChange,
+  onWantChange,
+  giveLabel,
+  wantLabel,
+}: {
+  giveResources: ResourceCounts;
+  wantResources: ResourceCounts;
+  onGiveChange: (next: ResourceCounts) => void;
+  onWantChange: (next: ResourceCounts) => void;
+  giveLabel: string;
+  wantLabel: string;
+}) {
+  return (
+    <div className="trade-composer">
+      <div className="trade-composer-header">
+        <span />
+        <span className="trade-col-label">{giveLabel}</span>
+        <span className="trade-col-label">{wantLabel}</span>
+      </div>
+      {RESOURCE_TYPES.map((type) => (
+        <div key={type} className="trade-composer-row">
+          <span className="trade-resource-label">{resourceLabel(type)}</span>
+          <div className="editor-controls">
+            <button
+              className="step-button"
+              disabled={giveResources[type] === 0}
+              onClick={() => onGiveChange(nextResourceSelection(giveResources, type, -1))}
+            >
+              -
+            </button>
+            <span className="step-value">{giveResources[type]}</span>
+            <button
+              className="step-button"
+              onClick={() => onGiveChange(nextResourceSelection(giveResources, type, 1))}
+            >
+              +
+            </button>
+          </div>
+          <div className="editor-controls">
+            <button
+              className="step-button"
+              disabled={wantResources[type] === 0}
+              onClick={() => onWantChange(nextResourceSelection(wantResources, type, -1))}
+            >
+              -
+            </button>
+            <span className="step-value">{wantResources[type]}</span>
+            <button
+              className="step-button"
+              onClick={() => onWantChange(nextResourceSelection(wantResources, type, 1))}
+            >
+              +
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ResourceEditor({

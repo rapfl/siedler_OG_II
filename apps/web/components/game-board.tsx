@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createBoardPresentation } from "../lib/ui/board-presentation";
 import { getBoardHoverLabel } from "../lib/ui/board-hover-label";
 import { buildPlayerLookup } from "../lib/ui/view-model";
-import { Application, Circle, Container, Graphics, Text, TextStyle } from "pixi.js";
+import { Application, Assets, Circle, Container, Graphics, Sprite, Text, TextStyle, Texture } from "pixi.js";
 import type { GeneratedBoard, MatchCommandType, MatchView, RoomView } from "@siedler/shared-types";
 
 interface GameBoardProps {
@@ -18,6 +18,15 @@ interface GameBoardProps {
   onEdgeSelect?: (edgeId: string) => void;
   onHoverTargetChange?: (target: string | undefined) => void;
 }
+
+const TILE_TEXTURE_URLS: Record<string, string> = {
+  wood: "/tiles/wood.png",
+  brick: "/tiles/brick.png",
+  sheep: "/tiles/sheep.png",
+  wheat: "/tiles/wheat.png",
+  ore: "/tiles/ore.png",
+  desert: "/tiles/desert.png",
+};
 
 const RESOURCE_COLORS: Record<string, number> = {
   wood: 0x355b2f,
@@ -79,6 +88,7 @@ export function GameBoard({
   const hostRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const renderRef = useRef<() => void>(() => {});
+  const texturesRef = useRef<Record<string, Texture>>({});
   const [renderError, setRenderError] = useState<string>();
   const playerLookup = useMemo(() => buildPlayerLookup(room), [room]);
   const hoverLabel = getBoardHoverLabel(mode);
@@ -112,6 +122,14 @@ export function GameBoard({
             safeDestroyApplication(app, appInitialized);
             return;
           }
+
+          const loadedEntries = await Promise.all(
+            Object.entries(TILE_TEXTURE_URLS).map(async ([key, url]) => {
+              const tex = await Assets.load<Texture>(url);
+              return [key, tex] as [string, Texture];
+            }),
+          );
+          texturesRef.current = Object.fromEntries(loadedEntries);
 
           appRef.current = app;
           host.replaceChildren(app.canvas);
@@ -161,7 +179,7 @@ export function GameBoard({
         board,
         width,
         height,
-        new Map(Array.from(playerLookup.entries()).map(([playerId, player]) => [playerId, player.color])),
+        new Map(Array.from(playerLookup, ([playerId, player]) => [playerId, player.color])),
       );
 
       const legalHexIds = new Set(mode === "MOVE_ROBBER" ? match.legalRobberHexIds ?? [] : []);
@@ -185,12 +203,12 @@ export function GameBoard({
 
       const backdrop = new Graphics();
       backdrop.roundRect(0, 0, width, height, 32);
-      backdrop.fill(0x1c1713);
+      backdrop.fill(0x0d1520);
       root.addChild(backdrop);
 
       const vignette = new Graphics();
       vignette.ellipse(width / 2, height / 2, width * 0.44, height * 0.4);
-      vignette.fill({ color: 0x8e6735, alpha: 0.12 });
+      vignette.fill({ color: 0x1a3860, alpha: 0.18 });
       root.addChild(vignette);
 
       for (const harbor of presentation.harbors) {
@@ -203,15 +221,43 @@ export function GameBoard({
       }
 
       for (const hex of presentation.hexes) {
+        const polyCoords = hex.polygon.flatMap((point) => [point.x, point.y]);
+        const xs = hex.polygon.map((p) => p.x);
+        const ys = hex.polygon.map((p) => p.y);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+
+        const texture = texturesRef.current[hex.resourceType];
+        if (texture) {
+          const sprite = new Sprite(texture);
+          sprite.x = minX;
+          sprite.y = minY;
+          sprite.width = maxX - minX;
+          sprite.height = maxY - minY;
+          const spriteMask = new Graphics();
+          spriteMask.poly(polyCoords);
+          spriteMask.fill(0xffffff);
+          root.addChild(spriteMask);
+          sprite.mask = spriteMask;
+          root.addChild(sprite);
+        } else {
+          const fill = new Graphics();
+          fill.poly(polyCoords);
+          fill.fill(resolveResourceColor(hex.resourceType), 0.97);
+          root.addChild(fill);
+        }
+
         const shape = new Graphics();
-        shape.poly(hex.polygon.flatMap((point) => [point.x, point.y]));
-        shape.fill(resolveResourceColor(hex.resourceType), 0.97);
+        shape.poly(polyCoords);
         shape.stroke({
-          color: legalHexIds.has(hex.hexId) ? 0xf0cf6f : 0xf0e2cb,
+          color: legalHexIds.has(hex.hexId) ? 0xf0cf6f : 0xc8daf0,
           width: legalHexIds.has(hex.hexId) ? 5 : 2,
-          alpha: legalHexIds.has(hex.hexId) ? 0.98 : 0.12,
+          alpha: legalHexIds.has(hex.hexId) ? 0.98 : 0.14,
         });
         if (legalHexIds.has(hex.hexId)) {
+          shape.fill({ color: 0xf0cf6f, alpha: 0.15 });
           enableInteraction(
             shape,
             () => onHexSelect?.(hex.hexId),
@@ -221,18 +267,10 @@ export function GameBoard({
         }
         root.addChild(shape);
 
-        const badge = new Graphics();
-        const label = resourceLabel(hex.resourceType);
-        const badgeWidth = Math.max(62, label.length * 8 + 18);
-        badge.roundRect(hex.center.x - badgeWidth / 2, hex.center.y - 68, badgeWidth, 22, 11);
-        badge.fill({ color: 0x201913, alpha: 0.72 });
-        badge.stroke({ color: 0xfff3e1, width: 1, alpha: 0.08 });
-        root.addChild(badge);
-
         const token = new Graphics();
         token.circle(hex.center.x, hex.center.y + 6, 20);
-        token.fill(0xf5ebdc);
-        token.stroke({ color: 0x8e6b2a, width: 2, alpha: 0.46 });
+        token.fill(0xf2e8d4);
+        token.stroke({ color: 0x7a8aaa, width: 2, alpha: 0.4 });
         root.addChild(token);
 
         const tokenNumber = hex.tokenNumber;
@@ -242,12 +280,6 @@ export function GameBoard({
         tokenText.y = hex.center.y + 4;
         root.addChild(tokenText);
 
-        const resourceText = new Text(label, resourceStyle);
-        resourceText.anchor.set(0.5);
-        resourceText.x = hex.center.x;
-        resourceText.y = hex.center.y - 57;
-        resourceText.alpha = 0.92;
-        root.addChild(resourceText);
 
         const pips = probabilityPipCount(tokenNumber);
         if (pips > 0) {
@@ -257,15 +289,15 @@ export function GameBoard({
           for (let index = 0; index < pips; index += 1) {
             pipRow.circle(startX + index * pipSpacing, hex.center.y + 24, 2.2);
           }
-          pipRow.fill(isHotNumber(tokenNumber) ? 0x8d3429 : 0x5a4630);
+          pipRow.fill(isHotNumber(tokenNumber) ? 0x8d3429 : 0x4a5878);
           root.addChild(pipRow);
         }
 
         if (hex.hasRobber) {
           const robber = new Graphics();
           robber.circle(hex.center.x + 42, hex.center.y - 34, 14);
-          robber.fill(0x18120f);
-          robber.stroke({ color: 0xe9c349, width: 2, alpha: 0.72 });
+          robber.fill(0x08101c);
+          robber.stroke({ color: 0xe9c349, width: 2, alpha: 0.82 });
           root.addChild(robber);
         }
       }
@@ -278,9 +310,9 @@ export function GameBoard({
           line.stroke({ color: resolvePlayerColor(edge.ownerColor), width: 8, alpha: 0.96 });
         } else {
           line.stroke({
-            color: legalEdgeIds.has(edge.edgeId) ? 0xf0cf6f : 0xf1e3cb,
+            color: legalEdgeIds.has(edge.edgeId) ? 0xf0cf6f : 0xc8daf0,
             width: legalEdgeIds.has(edge.edgeId) ? 8 : 3,
-            alpha: legalEdgeIds.has(edge.edgeId) ? 0.95 : 0.1,
+            alpha: legalEdgeIds.has(edge.edgeId) ? 0.95 : 0.12,
           });
         }
         root.addChild(line);
@@ -326,10 +358,11 @@ export function GameBoard({
           continue;
         }
 
+        const isLegal = legalIntersectionIds.has(intersection.intersectionId);
         const dot = new Graphics();
-        dot.circle(intersection.position.x, intersection.position.y, legalIntersectionIds.has(intersection.intersectionId) ? 9 : 5);
-        dot.fill(legalIntersectionIds.has(intersection.intersectionId) ? 0xf0cf6f : 0xf1e3cb);
-        dot.alpha = legalIntersectionIds.has(intersection.intersectionId) ? 1 : 0.42;
+        dot.circle(intersection.position.x, intersection.position.y, isLegal ? 9 : 5);
+        dot.fill(isLegal ? 0xf0cf6f : 0xc8daf0);
+        dot.alpha = isLegal ? 1 : 0.42;
         root.addChild(dot);
 
         if (legalIntersectionIds.has(intersection.intersectionId)) {
