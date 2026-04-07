@@ -3,7 +3,7 @@
 ## Zweck
 Dieses Dokument ist das operative Arbeitsbriefing für Codex.
 
-Es ist so formuliert, dass Codex die Spezifikationen nicht nur liest, sondern die Arbeit **kontinuierlich und entlang einer klaren Prioritätslogik** durcharbeitet.
+Es ist so formuliert, dass Codex die Spezifikationen nicht nur liest, sondern die Arbeit entlang einer klaren Prioritätslogik umsetzt.
 
 Es ergänzt:
 - `docs/START-HERE.md`
@@ -20,7 +20,7 @@ Dein Auftrag ist nicht, die Spezifikation neu zu schreiben, sondern sie:
 - korrekt zu lesen,
 - in eine tragfähige Codebasis zu übersetzen,
 - Abhängigkeiten sauber aufzulösen,
-- und den MVP **kontinuierlich** in sinnvoller Reihenfolge voranzubringen.
+- und den MVP in sinnvoller Reihenfolge voranzubringen.
 
 Du arbeitest entlang der bestehenden Entscheidungen. Du führst keine stillen Produkt-Richtungswechsel ein.
 
@@ -47,18 +47,18 @@ Wenn du eine Dateireihenfolge abkürzen musst, priorisiere:
 
 ---
 
-## 3. Arbeitsmodus: kontinuierlich statt punktuell
+## 3. Arbeitsmodus
 
-Arbeite nicht wie ein einmaliger Patch-Agent, sondern wie ein Agent, der die Umsetzung **sequenziell und fortlaufend** vorantreibt.
+Arbeite wie ein gezielter Umsetzungs-Agent.
 
 Das bedeutet:
 - arbeite entlang der Delivery-Roadmap,
-- schließe immer zuerst den nächsten kritischen Block,
-- hinterlasse nach jedem Schritt einen saubereren, testbareren Stand,
-- und bewege das Projekt vom Fundament zur Spielbarkeit – nicht umgekehrt.
+- bearbeite die konkret angefragte oder naheliegend priorisierte Aufgabe,
+- hinterlasse einen saubereren, testbareren Stand,
+- und bewege das Projekt vom Fundament zur Spielbarkeit, nicht umgekehrt.
 
 ### Konkrete Regel
-Wenn mehrere sinnvolle Aufgaben offen sind, bearbeite zuerst die Aufgabe,
+Wenn mehrere sinnvolle Aufgaben offen sind, priorisiere die Aufgabe,
 - die die meisten nachgelagerten Arbeiten unblockt,
 - das meiste technische Risiko reduziert,
 - und die Spezifikationen 00–05 am direktesten operationalisiert.
@@ -258,14 +258,3 @@ Das Ziel ist ein MVP, bei dem eine kleine private Gruppe:
 - und danach im selben Room eine neue Partie vorbereiten kann.
 
 Alles, was diesem Ziel nicht direkt dient, ist nachrangig.
-
----
-
-## 14. Kurzform
-
-Dein Arbeitsauftrag lautet:
-- lies die kanonischen Spezifikationen,
-- halte die getroffenen Entscheidungen ein,
-- arbeite die Delivery-Phasen kontinuierlich von Fundament zu Spielbarkeit durch,
-- sichere jeden Kernblock mit Tests ab,
-- und optimiere erst danach die Oberfläche.

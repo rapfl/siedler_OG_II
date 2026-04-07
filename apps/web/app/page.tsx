@@ -1,5 +1,5 @@
-import { EntryScreen } from "../features/entry/entry-screen";
+import { DemoMatchRoot } from "../features/entry/demo-match-root";
 
 export default function Page() {
-  return <EntryScreen />;
+  return <DemoMatchRoot />;
 }

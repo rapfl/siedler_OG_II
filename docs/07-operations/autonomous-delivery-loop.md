@@ -72,8 +72,8 @@ Human-readable ledger for discovered issues, blockers, and follow-up notes.
 ### `ops/runs/latest.md`
 Latest generated triage report.
 
-### `AGENTS.md`
-Repo-local instructions that keep future Codex sessions aligned with this loop.
+### `docs/CODEX-BRIEFING.md`
+Repo-local Codex briefing with the implementation context and priority order.
 
 ## Queue Design
 Each work item should include:

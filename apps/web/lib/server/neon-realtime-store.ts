@@ -3,11 +3,22 @@ import { InMemoryRealtimeService, type InMemoryRealtimeServiceState } from "@sie
 
 const STATE_KEY = "singleton";
 const MAX_MUTATION_RETRIES = 8;
-let inMemoryFallbackState: InMemoryRealtimeServiceState | undefined;
+
+declare global {
+  var __siedlerInMemoryRealtimeState: InMemoryRealtimeServiceState | undefined;
+}
 
 interface StoredRealtimeStateRow {
   payload: InMemoryRealtimeServiceState;
   version: number;
+}
+
+function readInMemoryFallbackState(): InMemoryRealtimeServiceState | undefined {
+  return globalThis.__siedlerInMemoryRealtimeState;
+}
+
+function writeInMemoryFallbackState(state: InMemoryRealtimeServiceState) {
+  globalThis.__siedlerInMemoryRealtimeState = state;
 }
 
 function databaseUrl(): string {
@@ -95,10 +106,11 @@ export async function ensureRealtimeSchema(): Promise<void> {
 export async function loadRealtimeService(): Promise<InMemoryRealtimeService> {
   if (!hasDatabaseUrl()) {
     const service = new InMemoryRealtimeService();
-    if (inMemoryFallbackState) {
-      service.importState(inMemoryFallbackState);
+    const fallbackState = readInMemoryFallbackState();
+    if (fallbackState) {
+      service.importState(fallbackState);
     } else {
-      inMemoryFallbackState = service.exportState();
+      writeInMemoryFallbackState(service.exportState());
     }
     return service;
   }
@@ -112,12 +124,13 @@ export async function loadRealtimeService(): Promise<InMemoryRealtimeService> {
 export async function mutateRealtimeState<T>(mutator: (service: InMemoryRealtimeService) => T | Promise<T>): Promise<T> {
   if (!hasDatabaseUrl()) {
     const service = new InMemoryRealtimeService();
-    if (inMemoryFallbackState) {
-      service.importState(inMemoryFallbackState);
+    const fallbackState = readInMemoryFallbackState();
+    if (fallbackState) {
+      service.importState(fallbackState);
     }
 
     const result = await mutator(service);
-    inMemoryFallbackState = service.exportState();
+    writeInMemoryFallbackState(service.exportState());
     return result;
   }
 
