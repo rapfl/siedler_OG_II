@@ -20,12 +20,12 @@ interface GameBoardProps {
 }
 
 const TILE_TEXTURE_URLS: Record<string, string> = {
-  wood: "/tiles/wood.png",
-  brick: "/tiles/brick.png",
-  sheep: "/tiles/sheep.png",
-  wheat: "/tiles/wheat.png",
-  ore: "/tiles/ore.png",
-  desert: "/tiles/desert.png",
+  wood: "/tiles/wood.svg",
+  brick: "/tiles/brick.svg",
+  sheep: "/tiles/sheep.svg",
+  wheat: "/tiles/wheat.svg",
+  ore: "/tiles/ore.svg",
+  desert: "/tiles/desert.svg",
 };
 
 const RESOURCE_COLORS: Record<string, number> = {

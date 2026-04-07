@@ -358,7 +358,7 @@ export function MatchScreen({ matchId }: { matchId: string }) {
                   <div
                     key={resource.type}
                     className={`realm-resource-card realm-resource-card-${resource.type} ${resource.count === 0 ? "realm-resource-card-empty" : ""}`}
-                    style={{ "--card-img": `url(/tiles/${resource.type}.png)` } as React.CSSProperties}
+                    style={{ "--card-img": `url(/tiles/${resource.type}.svg)` } as React.CSSProperties}
                     title={`${resource.label}: ${resource.count}`}
                   >
                     <span className="realm-resource-card-count">{resource.count}</span>
@@ -485,14 +485,15 @@ function splitRoll(total: number): [number, number] {
 }
 
 function DieFace({ value, delay }: { value: number; delay: number }) {
-  const dots: [number, number][] = {
+  const dotMap: Record<number, [number, number][]> = {
     1: [[50, 50]],
     2: [[25, 25], [75, 75]],
     3: [[25, 25], [50, 50], [75, 75]],
     4: [[25, 25], [75, 25], [25, 75], [75, 75]],
     5: [[25, 25], [75, 25], [50, 50], [25, 75], [75, 75]],
     6: [[25, 22], [75, 22], [25, 50], [75, 50], [25, 78], [75, 78]],
-  }[value] ?? [[50, 50]];
+  };
+  const dots = dotMap[value] ?? [[50, 50]];
 
   return (
     <div className="realm-die" style={{ animationDelay: `${delay}ms` }}>
