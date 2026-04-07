@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "assets:tiles:svg": "node scripts/generate-tile-svgs.mjs",
     "build": "npm run build --workspace @siedler/shared-types && npm run build --workspace @siedler/game-engine && npm run build --workspace @siedler/realtime && npm run build --workspace @siedler/web",
     "build:vercel:web": "npm run build --workspace @siedler/shared-types && npm run build --workspace @siedler/game-engine && npm run build --workspace @siedler/realtime && npm run build --workspace @siedler/web",
     "codex:loop": "node scripts/codex/run-loop.mjs",
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
+    "imagetracerjs": "^1.2.6",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }
