@@ -6,5 +6,8 @@ coverage
 *.tsbuildinfo
 .env
 .env.local
+.DS_Store
+.claude/
+game_fields/
 ops/runs/*
 !ops/runs/.gitkeep
