@@ -306,7 +306,7 @@ describe("turn engine", () => {
 
     const discarded = discardResources(rolled, "p2", {
       resources: {
-        wood: 4,
+        wood: 5,
       },
     });
 

@@ -10,6 +10,7 @@ import type {
 } from "@siedler/shared-types";
 import { createBrowserSession, readBrowserSession, type BrowserSessionState, writeBrowserSession } from "../session/storage";
 import { deriveBrowserSessionFromState, reduceAuthoritativeSessionState } from "./session-state";
+import { reconcileSandboxIdentities, type StoredSandboxIdentity } from "./sandbox-identities";
 import { isSandboxEnabledForRuntime } from "./sandbox-mode";
 
 type Listener = () => void;
@@ -57,11 +58,7 @@ interface SessionState {
   snapshotCache?: MatchSnapshotState;
 }
 
-interface MockSeatIdentity {
-  sessionId: string;
-  playerId: string;
-  displayName: string;
-}
+type MockSeatIdentity = StoredSandboxIdentity;
 
 const SANDBOX_IDENTITY_STORAGE_KEY = "siedler_og_ii_sandbox_identities";
 
@@ -91,14 +88,8 @@ function sandboxEnabled(): boolean {
   });
 }
 
-function emitRoom() {
-  for (const listener of roomListeners) {
-    listener();
-  }
-}
-
-function emitMatch() {
-  for (const listener of matchListeners) {
+function emitSnapshot() {
+  for (const listener of new Set([...roomListeners, ...matchListeners])) {
     listener();
   }
 }
@@ -154,6 +145,18 @@ function getSnapshotForSession(sessionId: string): MatchSnapshotState {
     return state.snapshotCache;
   }
 
+  return assignSnapshotCache(state);
+}
+
+function appendEventLog(current: ServerMessage[], dispatches: ServerMessage[]): ServerMessage[] {
+  if (dispatches.length === 0) {
+    return current;
+  }
+
+  return [...current, ...dispatches].slice(-24);
+}
+
+function assignSnapshotCache(state: SessionState): MatchSnapshotState {
   state.snapshotCache = {
     ...(state.room ? { room: state.room } : {}),
     ...(state.match ? { match: state.match } : {}),
@@ -167,6 +170,17 @@ function getSnapshotForSession(sessionId: string): MatchSnapshotState {
   return state.snapshotCache;
 }
 
+function sameBrowserSession(left: BrowserSessionState, right: BrowserSessionState): boolean {
+  return (
+    left.sessionId === right.sessionId &&
+    left.playerId === right.playerId &&
+    left.displayName === right.displayName &&
+    left.roomCode === right.roomCode &&
+    left.roomId === right.roomId &&
+    left.matchId === right.matchId
+  );
+}
+
 function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): MatchSnapshotState {
   const browserSession = readBrowserSession();
   if (!browserSession || browserSession.sessionId !== sessionId) {
@@ -174,9 +188,19 @@ function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): 
   }
 
   const state = ensureSessionState(browserSession);
-  for (const dispatch of snapshot.dispatches.filter((entry) => entry.sessionId === sessionId)) {
-    state.lastMessage = dispatch.message;
-    state.eventLog = [...state.eventLog.slice(-23), dispatch.message];
+  const previousRoom = state.room;
+  const previousMatch = state.match;
+  const previousBoard = state.board;
+  const previousRoomCode = state.roomCode;
+  const previousLastMessage = state.lastMessage;
+  const previousLastRejected = state.lastRejected;
+  const previousEventLog = state.eventLog;
+  const previousSession = state.browserSession;
+
+  const sessionDispatches = snapshot.dispatches.filter((entry) => entry.sessionId === sessionId).map((entry) => entry.message);
+  if (sessionDispatches.length > 0) {
+    state.lastMessage = sessionDispatches.at(-1)!;
+    state.eventLog = appendEventLog(state.eventLog, sessionDispatches);
   }
 
   if (snapshot.room) {
@@ -238,20 +262,24 @@ function applyServerSnapshot(sessionId: string, snapshot: ApiRealtimeSnapshot): 
     ...(state.board ? { board: state.board } : {}),
   });
   state.browserSession = nextSession;
-  state.snapshotCache = {
-    ...(state.room ? { room: state.room } : {}),
-    ...(state.match ? { match: state.match } : {}),
-    ...(state.board ? { board: state.board } : {}),
-    ...(state.roomCode ? { roomCode: state.roomCode } : {}),
-    ...(state.lastMessage ? { lastMessage: state.lastMessage } : {}),
-    ...(state.lastRejected ? { lastRejected: state.lastRejected } : {}),
-    eventLog: state.eventLog,
-  };
-  writeBrowserSession(nextSession);
 
-  emitRoom();
-  emitMatch();
-  return state.snapshotCache;
+  const changed =
+    previousRoom !== state.room ||
+    previousMatch !== state.match ||
+    previousBoard !== state.board ||
+    previousRoomCode !== state.roomCode ||
+    previousLastMessage !== state.lastMessage ||
+    previousLastRejected !== state.lastRejected ||
+    previousEventLog !== state.eventLog ||
+    !sameBrowserSession(previousSession, nextSession);
+
+  if (changed) {
+    writeBrowserSession(nextSession);
+    emitSnapshot();
+    return assignSnapshotCache(state);
+  }
+
+  return getSnapshotForSession(sessionId);
 }
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -301,6 +329,9 @@ function ensurePolling() {
   }
 
   pollHandle = window.setInterval(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
     void pollCurrentSession();
   }, 2000);
 }
@@ -336,6 +367,28 @@ function getMockSeats(roomCode: string): MockSeatIdentity[] {
   const restored = readSandboxIdentities(roomCode);
   mockSeatsByRoomCode.set(roomCode, restored);
   return restored;
+}
+
+function getReconciledMockSeats(
+  roomCode: string,
+  room: RoomView | undefined,
+  session: BrowserSessionState | undefined,
+): MockSeatIdentity[] {
+  const current = getMockSeats(roomCode);
+  const reconciled = reconcileSandboxIdentities(current, room, session);
+  const changed =
+    reconciled.length !== current.length ||
+    reconciled.some((identity, index) => {
+      const existing = current[index];
+      return !existing || existing.sessionId !== identity.sessionId || existing.playerId !== identity.playerId || existing.displayName !== identity.displayName;
+    });
+
+  if (changed) {
+    mockSeatsByRoomCode.set(roomCode, reconciled);
+    writeSandboxIdentities(roomCode, reconciled);
+  }
+
+  return reconciled;
 }
 
 function readSandboxIdentityMap(): Record<string, MockSeatIdentity[]> {
@@ -581,21 +634,28 @@ class HttpRealtimeClient implements RealtimeClient {
       return this.getSnapshot();
     }
     const browserSession = readBrowserSession();
-    const snapshot = this.getSnapshot();
-    const roomCode = snapshot.room?.roomCode ?? browserSession?.roomCode;
+    if (!browserSession) {
+      return getEmptySnapshot();
+    }
+
+    const freshSnapshot = await refreshCurrentSessionState(browserSession.sessionId);
+    const roomCode = freshSnapshot.room?.roomCode ?? browserSession.roomCode;
     if (!browserSession || !roomCode) {
       return getEmptySnapshot();
     }
 
-    const currentCount = snapshot.room?.playerSummaries.length ?? 0;
+    const currentCount = freshSnapshot.room?.playerSummaries.length ?? 0;
     const needed = targetPlayers - currentCount;
+    if (needed <= 0) {
+      return freshSnapshot;
+    }
+
     for (let index = 0; index < needed; index += 1) {
       const identity: MockSeatIdentity = {
         sessionId: randomId("mock-session"),
         playerId: randomId("mock-player"),
         displayName: `Guest ${currentCount + index + 1}`,
       };
-      rememberMockSeat(roomCode, identity);
       await fetchJson<ApiRealtimeSnapshot>("/api/room/join", {
         method: "POST",
         body: JSON.stringify({
@@ -613,10 +673,12 @@ class HttpRealtimeClient implements RealtimeClient {
           ready: true,
         }),
       });
+      rememberMockSeat(roomCode, identity);
     }
 
     const hostSnapshot = await fetchJson<ApiRealtimeSnapshot>(`/api/session/state?sessionId=${encodeURIComponent(browserSession.sessionId)}`);
     const next = applyServerSnapshot(browserSession.sessionId, hostSnapshot);
+    getReconciledMockSeats(roomCode, next.room, readBrowserSession() ?? browserSession);
     rememberCurrentSeat(readBrowserSession() ?? browserSession);
     return next;
   }
@@ -636,7 +698,7 @@ class HttpRealtimeClient implements RealtimeClient {
       rememberCurrentSeat(session);
     }
 
-    return getMockSeats(roomCode).map((identity) => ({
+    return getReconciledMockSeats(roomCode, this.getSnapshot().room, session).map((identity) => ({
       ...identity,
       isCurrent: identity.sessionId === session?.sessionId,
     }));
@@ -653,7 +715,7 @@ class HttpRealtimeClient implements RealtimeClient {
       return this.getSnapshot();
     }
 
-    const identity = getMockSeats(roomCode).find((entry) => entry.sessionId === sessionId);
+    const identity = getReconciledMockSeats(roomCode, this.getSnapshot().room, current).find((entry) => entry.sessionId === sessionId);
     if (!identity) {
       throw new Error("Unknown sandbox identity.");
     }
@@ -669,8 +731,7 @@ class HttpRealtimeClient implements RealtimeClient {
 
     writeBrowserSession(nextSession);
     ensureSessionState(nextSession);
-    emitRoom();
-    emitMatch();
+    emitSnapshot();
 
     return refreshCurrentSessionState(identity.sessionId);
   }

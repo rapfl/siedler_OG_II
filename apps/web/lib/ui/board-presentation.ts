@@ -47,9 +47,30 @@ export interface BoardPresentation {
   harbors: PresentedHarbor[];
 }
 
+export interface StaticBoardPresentation {
+  width: number;
+  height: number;
+  center: BoardUiPoint;
+  hexes: Array<
+    PresentedHex & {
+      polygonCoords: number[];
+      bounds: { minX: number; maxX: number; minY: number; maxY: number };
+    }
+  >;
+  intersections: Array<
+    Omit<PresentedIntersection, "building"> & {
+      adjacentEdgeIds: string[];
+      adjacentIntersectionIds: string[];
+    }
+  >;
+  edges: PresentedEdge[];
+  harbors: PresentedHarbor[];
+}
+
 const BOARD_PADDING = 52;
 const HEX_CORNER_ANGLES = [30, 90, 150, 210, 270, 330] as const;
 const HEX_RADIUS = 1;
+const STATIC_PRESENTATION_CACHE = new WeakMap<GeneratedBoard, Map<string, StaticBoardPresentation>>();
 
 export function createBoardPresentation(
   board: GeneratedBoard,
@@ -57,12 +78,46 @@ export function createBoardPresentation(
   height: number,
   playerColors: Map<string, PlayerColor | undefined>,
 ): BoardPresentation {
+  const staticPresentation = createStaticBoardPresentation(board, width, height);
+
+  return {
+    width: staticPresentation.width,
+    height: staticPresentation.height,
+    center: staticPresentation.center,
+    hexes: staticPresentation.hexes,
+    intersections: staticPresentation.intersections.map((intersection) => ({
+      intersectionId: intersection.intersectionId,
+      position: intersection.position,
+      harborAccess: intersection.harborAccess,
+      ...(board.intersections[intersection.intersectionId]?.building
+        ? {
+            building: {
+              buildingType: board.intersections[intersection.intersectionId]!.building!.buildingType,
+              ownerColor: playerColors.get(board.intersections[intersection.intersectionId]!.building!.ownerPlayerId),
+            },
+          }
+        : {}),
+    })),
+    edges: staticPresentation.edges.map((edge) => ({
+      ...edge,
+      ownerColor: board.edges[edge.edgeId]?.road?.ownerPlayerId ? playerColors.get(board.edges[edge.edgeId]!.road!.ownerPlayerId) : undefined,
+    })),
+    harbors: staticPresentation.harbors,
+  };
+}
+
+export function createStaticBoardPresentation(board: GeneratedBoard, width: number, height: number): StaticBoardPresentation {
+  const cacheKey = `${width}x${height}`;
+  const cachedByBoard = STATIC_PRESENTATION_CACHE.get(board);
+  const cached = cachedByBoard?.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const sourceHexPolygons = Object.fromEntries(
     Object.entries(board.hexes).map(([hexId, hex]) => [hexId, createSourceHexPolygon(hex.uiCenter)]),
   ) as Record<string, BoardUiPoint[]>;
-  const sourceIntersections = Object.fromEntries(
-    Object.entries(board.intersections).map(([intersectionId, intersection]) => [intersectionId, intersection.uiPosition]),
-  ) as Record<string, BoardUiPoint>;
+  const sourceIntersections = buildSourceIntersectionPositions(board, sourceHexPolygons);
   const sourcePoints = [...Object.values(sourceHexPolygons).flat(), ...Object.values(sourceIntersections)];
   const bounds = measureBounds(sourcePoints);
 
@@ -94,40 +149,42 @@ export function createBoardPresentation(
     y: bounds.minY + bounds.height / 2,
   });
 
-  return {
+  const presentation: StaticBoardPresentation = {
     width,
     height,
     center,
     hexes: board.hexOrder.map((hexId) => {
+      const polygon = screenHexPolygons[hexId]!;
+      const xs = polygon.map((point) => point.x);
+      const ys = polygon.map((point) => point.y);
       const hex = board.hexes[hexId]!;
-      const centerPoint = screenHexCenters[hexId]!;
       return {
         hexId,
         resourceType: hex.resourceType,
         tokenNumber: hex.tokenNumber,
         hasRobber: hex.hasRobber,
-        center: centerPoint,
-        polygon: screenHexPolygons[hexId]!,
+        center: screenHexCenters[hexId]!,
+        polygon,
+        polygonCoords: polygon.flatMap((point) => [point.x, point.y]),
+        bounds: {
+          minX: Math.min(...xs),
+          maxX: Math.max(...xs),
+          minY: Math.min(...ys),
+          maxY: Math.max(...ys),
+        },
       };
     }),
     intersections: Object.values(board.intersections).map((intersection) => ({
       intersectionId: intersection.intersectionId,
       position: screenIntersections[intersection.intersectionId]!,
       harborAccess: intersection.harborAccess,
-      ...(intersection.building
-        ? {
-            building: {
-              buildingType: intersection.building.buildingType,
-              ownerColor: playerColors.get(intersection.building.ownerPlayerId),
-            },
-          }
-        : {}),
+      adjacentEdgeIds: intersection.adjacentEdgeIds,
+      adjacentIntersectionIds: intersection.adjacentIntersectionIds,
     })),
     edges: Object.values(board.edges).map((edge) => ({
       edgeId: edge.edgeId,
       a: screenIntersections[edge.intersectionAId]!,
       b: screenIntersections[edge.intersectionBId]!,
-      ownerColor: edge.road?.ownerPlayerId ? playerColors.get(edge.road.ownerPlayerId) : undefined,
     })),
     harbors: Object.values(board.harbors).map((harbor) => {
       const a = screenIntersections[harbor.intersectionIds[0]]!;
@@ -139,6 +196,14 @@ export function createBoardPresentation(
       };
     }),
   };
+
+  const nextCache = cachedByBoard ?? new Map<string, StaticBoardPresentation>();
+  nextCache.set(cacheKey, presentation);
+  if (!cachedByBoard) {
+    STATIC_PRESENTATION_CACHE.set(board, nextCache);
+  }
+
+  return presentation;
 }
 
 function createSourceHexPolygon(sourceCenter: BoardUiPoint) {
@@ -149,6 +214,41 @@ function createSourceHexPolygon(sourceCenter: BoardUiPoint) {
       y: sourceCenter.y + Math.sin(radians) * HEX_RADIUS,
     };
   });
+}
+
+function buildSourceIntersectionPositions(
+  board: GeneratedBoard,
+  sourceHexPolygons: Record<string, BoardUiPoint[]>,
+): Record<string, BoardUiPoint> {
+  const collected = new Map<string, BoardUiPoint[]>();
+
+  for (const hex of Object.values(board.hexes)) {
+    const polygon = sourceHexPolygons[hex.hexId] ?? [];
+    hex.adjacentIntersectionIds.forEach((intersectionId, index) => {
+      const point = polygon[index];
+      if (!point) {
+        return;
+      }
+      const existing = collected.get(intersectionId) ?? [];
+      existing.push(point);
+      collected.set(intersectionId, existing);
+    });
+  }
+
+  return Object.fromEntries(
+    Object.values(board.intersections).map((intersection) => {
+      const points = collected.get(intersection.intersectionId) ?? [];
+      const averaged =
+        points.length > 0
+          ? {
+              x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+              y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+            }
+          : intersection.uiPosition;
+
+      return [intersection.intersectionId, averaged];
+    }),
+  ) as Record<string, BoardUiPoint>;
 }
 
 function positionHarborLabel(a: BoardUiPoint, b: BoardUiPoint, center: BoardUiPoint) {

@@ -123,4 +123,33 @@ describe("ensurePlayableSandboxMatch", () => {
     expect(client.createRoom).not.toHaveBeenCalled();
     expect(result.matchId).toBe("match-reattached");
   });
+
+  it("does not refill a room that already has the target sandbox seats on a later bootstrap pass", async () => {
+    const filledRoom = createRoomSnapshot(false, 4, true);
+    const startedMatch = {
+      ...filledRoom,
+      match: {
+        matchId: "match-later-pass",
+      } as unknown as MatchView,
+    };
+
+    const client = {
+      createRoom: vi.fn(),
+      fillRoomWithMockPlayers: vi.fn(),
+      toggleReady: vi.fn(async () => filledRoom),
+      startMatch: vi.fn(async () => startedMatch),
+      reattachSession: vi.fn(async () => startedMatch),
+      supportsSandboxTools: vi.fn(() => true),
+      getSnapshot: vi.fn(() => filledRoom),
+    };
+
+    const result = await ensurePlayableSandboxMatch(client, filledRoom, {
+      sessionId: "s1",
+      playerId: "p1",
+      displayName: "Sir Alistair",
+    });
+
+    expect(client.fillRoomWithMockPlayers).not.toHaveBeenCalled();
+    expect(result.matchId).toBe("match-later-pass");
+  });
 });

@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "serve": "next start",
     "typecheck": "next typegen && tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

@@ -92,15 +92,6 @@ const DEVELOPMENT_CARD_DISTRIBUTION: DevelopmentCardType[] = [
   "road_building",
   "road_building",
 ];
-const CUBE_CORNER_OFFSETS = [
-  [2, -1, -1],
-  [1, 1, -2],
-  [-1, 2, -1],
-  [-2, 1, 1],
-  [-1, -1, 2],
-  [1, -2, 1],
-] as const;
-
 interface BoardTemplate {
   hexOrder: string[];
   hexCoords: Record<string, { q: number; r: number }>;
@@ -569,14 +560,12 @@ function buildBoardTemplate(): BoardTemplate {
       hexByCoord.set(`${q},${r}`, hexId);
 
       const center = hexCenters[hexId]!;
-      const cubeCenter = axialToCube(q, r);
       const cornerIds: string[] = [];
       const edgeIds: string[] = [];
 
       CORNER_ANGLES.forEach((angle, cornerIndex) => {
         const point = hexCorner(center.x, center.y, angle);
-        const [offsetX, offsetY, offsetZ] = CUBE_CORNER_OFFSETS[cornerIndex]!;
-        const pointKey = `${cubeCenter.x * 3 + offsetX},${cubeCenter.y * 3 + offsetY},${cubeCenter.z * 3 + offsetZ}`;
+        const pointKey = toPointKey(point);
         let intersectionId = intersectionsByPoint.get(pointKey);
 
         if (!intersectionId) {
@@ -801,12 +790,8 @@ function hexToPixel(q: number, r: number) {
   };
 }
 
-function axialToCube(q: number, r: number) {
-  return {
-    x: q,
-    z: r,
-    y: -q - r,
-  };
+function toPointKey(point: { x: number; y: number }) {
+  return `${Math.round(point.x * 1_000_000)},${Math.round(point.y * 1_000_000)}`;
 }
 
 function hexCorner(centerX: number, centerY: number, angleDegrees: number) {

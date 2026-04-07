@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ClientErrorBoundary } from "../../components/client-error-boundary";
 import { GameBoard } from "../../components/game-board";
@@ -67,11 +67,16 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const [discardResources, setDiscardResources] = useState<ResourceCounts>(emptyResources());
   const [hoverTarget, setHoverTarget] = useState<string>();
 
-  const model = createMatchScreenModel(snapshot, matchId, selectedBoardAction);
   const match = snapshot.match?.matchId === matchId ? snapshot.match : undefined;
   const room = snapshot.room;
   const board = snapshot.board;
   const sandboxIdentities = client.supportsSandboxTools() ? client.getSandboxIdentities() : [];
+  const model = useMemo(
+    () => createMatchScreenModel(snapshot, matchId, selectedBoardAction),
+    [matchId, selectedBoardAction, snapshot],
+  );
+  const resourceBarEntries = resourceEntries(match?.ownResources);
+  const recentChronicleEntries = snapshot.eventLog.slice(-4).reverse();
 
   useEffect(() => {
     if (!match) {
@@ -147,8 +152,6 @@ export function MatchScreen({ matchId }: { matchId: string }) {
   const isSetupPhase = match.matchStatus === "match_setup";
   const boardSelectionHint = describeBoardSelection(boardMode, match);
   const phaseDisplay = phaseDisplayLabel(match);
-  const resourceBarEntries = resourceEntries(match.ownResources);
-  const recentChronicleEntries = snapshot.eventLog.slice(-4).reverse();
   const canRollDice = match.allowedActions?.includes("ROLL_DICE") ?? false;
   const canBuyDevCard = match.allowedActions?.includes("BUY_DEV_CARD") ?? false;
   const isBuildMenuOpen = boardMode === "BUILD_ROAD" || boardMode === "BUILD_SETTLEMENT" || boardMode === "UPGRADE_CITY" || buildMode !== null;
@@ -493,7 +496,7 @@ function DieFace({ value, delay }: { value: number; delay: number }) {
     5: [[25, 25], [75, 25], [50, 50], [25, 75], [75, 75]],
     6: [[25, 22], [75, 22], [25, 50], [75, 50], [25, 78], [75, 78]],
   };
-  const dots = dotMap[value] ?? [[50, 50]];
+  const dots = dotMap[value] ?? dotMap[1]!;
 
   return (
     <div className="realm-die" style={{ animationDelay: `${delay}ms` }}>
@@ -901,19 +904,14 @@ function MatchSidebarPanel({
                 <strong>{snapshot.lastRejected.reasonCode}</strong>: {snapshot.lastRejected.message}
               </div>
             ) : null}
+          </div>
+
+          <div className="rail-block">
+            <p className="eyebrow">Session actions</p>
             <div className="cluster">
               <button className="action-button secondary-button" onClick={onReattach}>
                 Reattach
               </button>
-              {sandboxIdentities.map((identity) => (
-                <button
-                  key={identity.sessionId}
-                  className={`secondary-button small-button ${identity.isCurrent ? "button-active" : ""}`}
-                  onClick={() => onSwitchSandboxIdentity(identity.sessionId)}
-                >
-                  {identity.displayName}
-                </button>
-              ))}
               {onAdvanceSandbox ? (
                 <button className="action-button secondary-button" onClick={onAdvanceSandbox}>
                   Sandbox sync
@@ -921,6 +919,23 @@ function MatchSidebarPanel({
               ) : null}
             </div>
           </div>
+
+          {sandboxIdentities.length > 0 ? (
+            <div className="rail-block">
+              <p className="eyebrow">Perspective switcher</p>
+              <div className="sandbox-identity-list">
+                {sandboxIdentities.map((identity) => (
+                  <button
+                    key={identity.sessionId}
+                    className={`secondary-button small-button sandbox-identity-button ${identity.isCurrent ? "button-active" : ""}`}
+                    onClick={() => onSwitchSandboxIdentity(identity.sessionId)}
+                  >
+                    {identity.displayName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

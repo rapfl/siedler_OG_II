@@ -16,10 +16,13 @@ export function DemoMatchRoot() {
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const inFlightRef = useRef(false);
+  const snapshotRoomCode = snapshot.room?.roomCode;
+  const snapshotRoomVersion = snapshot.room?.roomVersion;
+  const snapshotMatchId = snapshot.match?.matchId;
 
   useEffect(() => {
-    if (snapshot.match?.matchId) {
-      setMatchId(snapshot.match.matchId);
+    if (snapshotMatchId) {
+      setMatchId(snapshotMatchId);
       setStatus("ready");
       setError(undefined);
       return;
@@ -51,7 +54,7 @@ export function DemoMatchRoot() {
       .finally(() => {
         inFlightRef.current = false;
       });
-  }, [attempt, client, session, snapshot]);
+  }, [attempt, client, session, snapshotMatchId, snapshotRoomCode, snapshotRoomVersion]);
 
   if (status === "ready" && matchId) {
     return <MatchScreen matchId={matchId} />;

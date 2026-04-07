@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createBoardTemplate } from "@siedler/game-engine";
 
-import { createBoardPresentation } from "../lib/ui/board-presentation";
+import { createBoardPresentation, createStaticBoardPresentation } from "../lib/ui/board-presentation";
 
 describe("board presentation", () => {
   it("keeps projected hex polygons within the board bounds and below giant-blob scale", () => {
@@ -51,5 +51,29 @@ describe("board presentation", () => {
 
     expect(distanceRatios.length).toBeGreaterThan(0);
     expect(distanceRatios.at(-1)! / distanceRatios[0]!).toBeLessThan(1.02);
+  });
+
+  it("reuses cached static geometry for the same board identity and viewport", () => {
+    const board = createBoardTemplate();
+
+    const first = createStaticBoardPresentation(board, 1200, 800);
+    const second = createStaticBoardPresentation(board, 1200, 800);
+    const resized = createStaticBoardPresentation(board, 1400, 800);
+    const dynamic = createBoardPresentation(board, 1200, 800, new Map());
+
+    expect(second).toBe(first);
+    expect(resized).not.toBe(first);
+    expect(dynamic.hexes[0]?.center).toEqual(first.hexes[0]?.center);
+  });
+
+  it("keeps projected edge lengths consistent across the board so roads stay on edge corridors", () => {
+    const board = createBoardTemplate();
+    const presentation = createStaticBoardPresentation(board, 1200, 800);
+    const edgeLengths = presentation.edges
+      .map((edge) => Math.hypot(edge.b.x - edge.a.x, edge.b.y - edge.a.y))
+      .sort((left, right) => left - right);
+
+    expect(edgeLengths.length).toBeGreaterThan(0);
+    expect(edgeLengths.at(-1)! / edgeLengths[0]!).toBeLessThan(1.02);
   });
 });
